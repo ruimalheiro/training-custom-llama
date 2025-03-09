@@ -11,62 +11,78 @@ from pathlib import Path
 from tokenizer import Tokenizer
 
 
-local_dir = 'edu_fineweb10B'
-remote_name = 'sample-10BT'
-shard_size = int(1e8)
-
-DATA_CACHE_DIR = os.path.join(os.getcwd(), local_dir)
+DATA_CACHE_DIR = os.path.join(os.getcwd(), 'edu_fineweb10B')
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
-enc = Tokenizer('./tokenizer.model')
-PAD_TOKEN_ID= enc.pad_id
-STOP_TOKENS = enc.stop_tokens
-print(f'TOKENIZER VOCAB SIZE: {enc.number_of_words}')
-eot = enc.special_tokens['<|end_of_text|>']
+dataset = load_dataset('HuggingFaceFW/fineweb-edu', name='sample-10BT', split='train', cache_dir='./cache')
+
+tokenizer = Tokenizer('./tokenizer.model')
+
+PAD_TOKEN_ID = tokenizer.pad_id
+STOP_TOKENS = tokenizer.stop_tokens
+EOT_TOKEN_ID = tokenizer.special_tokens['<|end_of_text|>']
+
+print(f'Tokenizer vocabulary size: {tokenizer.number_of_words}')
+
+NUMBER_OF_PROCESSES = max(1, os.cpu_count() - 1)
+CHUNKSIZE = 16
+
+print(f'\nPreparing dataset:\n')
+print(f'Number of CPU processes: {NUMBER_OF_PROCESSES}\n')
+
 
 def tokenize(doc):
-    tokens = [eot]
-    tokens.extend(enc.encode(doc['text']))
+    tokens = [EOT_TOKEN_ID]
+    tokens.extend(tokenizer.encode(doc['text']))
     tokens_np = np.array(tokens)
-    tokens_np_uint32 = tokens_np.astype(np.uint32)
-    return tokens_np_uint32
+    return tokens_np
 
-def write_datafile(filename, tokens_np):
-    np.save(filename, tokens_np)
+def get_progress_bar(shard_size):
+    return tqdm(total=shard_size, unit='tokens', desc=f'Shard {shard_index}')
 
-nprocs = max(1, os.cpu_count() // 2)
+def get_filename(shard_index):
+    split = 'val' if shard_index == 0 else 'train'
+    return os.path.join(DATA_CACHE_DIR, f'edufineweb_{split}_{shard_index:06d}')
 
-fw = load_dataset('HuggingFaceFW/fineweb-edu', name=remote_name, split='train', cache_dir='./cache')
-
-with mp.Pool(nprocs) as pool:
+with mp.Pool(NUMBER_OF_PROCESSES) as pool:
+    shard_size = int(1e8)
     shard_index = 0
-
-    all_tokens_np = np.empty((shard_size,), dtype=np.uint16)
     token_count = 0
     progress_bar = None
 
-    for tokens in pool.imap(tokenize, fw, chunksize=16):
+    all_tokens_np = np.empty((shard_size,), dtype=np.uint32)
+
+    for tokens in pool.imap(tokenize, dataset, chunksize=CHUNKSIZE):
 
         if token_count + len(tokens) < shard_size:
-            all_tokens_np[token_count:token_count+len(tokens)] = tokens
-            token_count += len(tokens)
+            new_token_count = token_count + len(tokens)
+
+            all_tokens_np[token_count:new_token_count] = tokens
+            token_count = new_token_count
 
             if progress_bar is None:
-                progress_bar = tqdm(total=shard_size, unit='tokens', desc=f'Shard {shard_index}')
+                progress_bar = get_progress_bar(shard_size)
             progress_bar.update(len(tokens))
         else:
-            split = 'val' if shard_index == 0 else 'train'
-            filename = os.path.join(DATA_CACHE_DIR, f'edufineweb_{split}_{shard_index:06d}')
-            remainder = shard_size - token_count
-            progress_bar.update(remainder)
-            all_tokens_np[token_count:token_count+remainder] = tokens[:remainder]
-            write_datafile(filename, all_tokens_np)
+            remaining = shard_size - token_count
+            progress_bar.update(remaining)
+
+            all_tokens_np[token_count:token_count + remaining] = tokens[:remaining]
+
+            # Store maxed out shard
+            np.save(get_filename(shard_index), all_tokens_np)
+
             shard_index += 1
+
+            progress_bar.close()
             progress_bar = None
-            all_tokens_np[0:len(tokens)-remainder] = tokens[remainder:]
-            token_count = len(tokens)-remainder
+
+            # reset and populate with remaining. Update new token_count
+            all_tokens_np[0:len(tokens) - remaining] = tokens[remaining:]
+            token_count = len(tokens) - remaining
 
     if token_count != 0:
-        split = 'val' if shard_index == 0 else 'train'
-        filename = os.path.join(DATA_CACHE_DIR, f'edufineweb_{split}_{shard_index:06d}')
-        write_datafile(filename, all_tokens_np[:token_count])
+        np.save(get_filename(shard_index), all_tokens_np[:token_count])
+
+
+print('\nData preparation completed.')

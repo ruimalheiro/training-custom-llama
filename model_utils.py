@@ -59,10 +59,9 @@ def manage_checkpoints(directory, current_step, max_files):
     # Sort list by step numbers
     steps_files.sort()
 
-    # Determine cutoff step for deletion (keep only the last `max_files` checkpoints)
+    # save only the last max_files checkpoints- This is to avoid running out of disk space
     if len(steps_files) > max_files:
         cutoff_index = max(0, len(steps_files) - max_files)
-        # Only delete files whose step is less than the smallest 'kept' step
         cutoff_step = steps_files[cutoff_index][0]
 
         # Delete files
