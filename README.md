@@ -7,7 +7,9 @@ Main concepts covered in this project:
 - Using datasets such as FineWeb-edu and HellaSwag.
 - Implementing a basic version of Llama3 and configuring the tokenizer.
 
-**NOTE**: Could be adapted for other datasets / We are not training the tokenizer here.
+**NOTE**: 
+- The project can be adapted for other datasets.
+- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project.
 
 ### Datasets Used
 This project uses the following datasets:
