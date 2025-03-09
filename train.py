@@ -10,10 +10,16 @@ from tokenizer import Tokenizer
 from model import Transformer, ModelConfig
 from model_utils import save_model, load_model, init_multi_gpu, prepare_model_for_ddp, WnbWrapper
 from dataloaders import DataLoaderLite, init_data_loaders
-from hellaswag_utils import render_example, get_most_likely_row, iterate_examples
+from hellaswag_utils import (
+    iterate_hellaswag_val_examples,
+    prepare_hellaswag_example,
+    estimate_correct_candidate_selection
+)
 from tqdm import tqdm
 
-##############################################################
+############################# CONFIGURATION #################################
+#############################################################################
+
 # export WANDB_API_KEY=<KEY> && export OMP_NUM_THREADS=1 && torchrun --standalone --nproc_per_node 1 train.py
 
 EDU_FINEWEB_PATH = './edu_fineweb10B'
@@ -21,7 +27,7 @@ HELLASWAG_PATH = './hellaswag'
 CHECKPOINTS_DIR = './checkpoints'
 TOKENIZER_CHECKPOINT_PATH = './tokenizer.model'
 
-total_batch_size = 524288
+total_batch_size = 524288 # Consider line 121 for gradient acumulation steps / number of gpus in the node.
 
 max_lr = 6e-4 * 3
 min_lr = max_lr * 0.1
@@ -30,11 +36,11 @@ weight_decay=0.1
 
 max_steps = 19073
 
-validate_every_x_steps = 2
+validate_every_x_steps = 10
 val_steps = 50
 
-generate_every_x_steps = 2
-mas_gen_len=32
+generate_every_x_steps = 10
+max_test_gen_len=32
 test_generation_prompts = [
     'I am a language model,',
     'Computers are',
@@ -42,32 +48,50 @@ test_generation_prompts = [
     'I like'
 ]
 
-hellaswag_every_x_steps = 2
-hellag_swag_limit = 10
+hellaswag_every_x_steps = 10
+hellagswag_number_of_examples = 10
 
 
 version = 1
-wnb_disabled=True
-wnb_project_name = f'custom_llama3_pretraining_local_v{version}'
+wnb_disabled = True
+wnb_project_name = f'custom_llama3_training_v{version}'
+save_checkpoints = False
 
 config = ModelConfig(
-    dim=768,
-    n_layers=16,
-    n_heads=16,
-    n_kv_heads=8,
+    dim=512,
+    n_layers=2,
+    n_heads=2,
+    n_kv_heads=2,
     vocab_size=128256,
     multiple_of=1024,
     ffn_dim_multiplier=1.0,
     norm_eps=1e-05,
     rope_theta=500000.0,
-    max_batch_size=4,
-    max_seq_len=1024
-)
-
-##############################################################
+    max_batch_size=16,
+    max_seq_len=512
+ )
 
 
-parser = argparse.ArgumentParser(description="Training Script")
+# A better config.
+# config = ModelConfig(
+#     dim=768,
+#     n_layers=16,
+#     n_heads=16,
+#     n_kv_heads=8,
+#     vocab_size=128256,
+#     multiple_of=1024,
+#     ffn_dim_multiplier=1.0,
+#     norm_eps=1e-05,
+#     rope_theta=500000.0,
+#     max_batch_size=4,
+#     max_seq_len=1024
+# )
+
+#############################################################################
+#############################################################################
+
+
+parser = argparse.ArgumentParser(description='Training Script')
 parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint to load.')
 
 args = parser.parse_args()
@@ -104,7 +128,7 @@ if is_master_process:
     print(f'total batch size: {total_batch_size}')
     print(f'calculated gradient accumulation steps: {grad_accum_steps}')
 
-print(f'I am GPU: {ddp_rank}')
+print(f'I am GPU: {ddp_rank} and I am ready to go brrr :)')
 
 optimizer = raw_model.configure_optimizers(weight_decay=weight_decay, learning_rate=max_lr, device=device, is_master_process=is_master_process)
 
@@ -153,19 +177,20 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             dist.all_reduce(val_loss_acc, op=dist.ReduceOp.AVG)
         if is_master_process:
             print(f'validation loss: {val_loss_acc.item():.4f}')
-            save_model(CHECKPOINTS_DIR, raw_model, config, step, val_loss_acc, optimizer)
+            if save_checkpoints is True:
+                save_model(CHECKPOINTS_DIR, raw_model, config, step, val_loss_acc, optimizer)
             wnb.log({'Validation Loss': val_loss_acc.item()})
 
     if step > 0 and step % hellaswag_every_x_steps == 0 or last_step:
         model.eval()
         num_correct_norm = 0
         num_total = 0
-        for i, example in tqdm(enumerate(iterate_examples(HELLASWAG_PATH, 'val', size=hellag_swag_limit)), 'Hellaswag validation', unit=' examples'):
-            # only process examples where i % ddp_world_size == ddp_rank
+        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(HELLASWAG_PATH, size=hellagswag_number_of_examples)), 'Hellaswag validation', unit=' examples'):
+            # if i % ddp_world_size == ddp_rank (gpu itself), process.
             if i % ddp_world_size != ddp_rank:
                 continue
-            # render the example into tokens and labels
-            _, tokens, mask, label = render_example(example, tokenizer)
+
+            _, tokens, mask, label = prepare_hellaswag_example(example, tokenizer)
             tokens = tokens.to(device)
             mask = mask.to(device)
 
@@ -174,9 +199,10 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits = model(tokens)
                     
-                pred_norm = get_most_likely_row(tokens, mask, logits)
+                predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
+
             num_total += 1
-            num_correct_norm += int(pred_norm == label)
+            num_correct_norm += int(predicted_correct == label)
 
         # reduce the stats across all processes
         if ddp:
@@ -195,7 +221,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         model.eval()
         raw_model.test_dialogue_custom(
             test_generation_prompts,
-            max_gen_len=mas_gen_len,
+            max_gen_len=max_test_gen_len,
             device=device
         )
 
