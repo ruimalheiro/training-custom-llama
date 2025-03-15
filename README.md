@@ -27,6 +27,8 @@ The implementation in this project is a bit different but the core ideas are the
   - Dataset can be found [here](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu).
 - `load_hellaswag_dataset.py` Downloads the HellaSwag validation split.
   - Dataset can be found [here](https://github.com/rowanz/hellaswag)
+- `load_cosmopedia_v2.py` Loads and prepares the instruct dataset from smollm-corpus (just the cosmopedia-v2 subset).
+  - Dataset can be found [here](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
 - `hellaswag_utils.py` Contains the main logic to iterate, process and evaluate hellaswag examples.
 - `model.py` Implements the custom llama3
 - `tokenizer.py` Uses tiktoken to setup the tokenizer for llama3 with some changes for encoding / decoding and the special tokens needed.
@@ -35,7 +37,7 @@ The implementation in this project is a bit different but the core ideas are the
   - Torch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
   - Weight and Bias [here](https://wandb.ai/site/)
 - `tokenizer.model` Required to load the pretrained tokenizer (Aligned with llama3)
-- `train.py` Main file to configure the model architecture and initialize the training job.
+- `train.py` Main file to configure the model architecture and initialize the training job. Now added logic more model distillation (teacher needs to be from transformers(but can be adapted))
 
 ## Setup
 ### Part 1 - Setup the project, download and prepare the data:
@@ -72,3 +74,8 @@ Now we should be ready to start a pre-training job:
     torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py
     ```
     - More details on torchrun [here](https://pytorch.org/docs/stable/elastic/run.html)
+- To load a checkpoint and continue training, pass the flag to any of the above commands. E.g.:
+    ```
+    torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py --checkpoint <CHECKPOINT_FILE_NAME>
+    ```
+    - NOTE: This will also load the optimizer and the step where it was. You can reset the optimizer with the flag `--reset-optimizer` and set the start step with the flag `--start-step`. E.g.: `--start-step 10`

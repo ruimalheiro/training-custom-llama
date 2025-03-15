@@ -7,13 +7,13 @@ from tqdm import tqdm
 from tokenizer import Tokenizer
 
 
-DATA_CACHE_DIR = os.path.join(os.getcwd(), 'edu_fineweb10B')
+DATA_CACHE_DIR = os.path.join(os.getcwd(), 'smollm_cosmopedia_v2')
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 NUMBER_OF_PROCESSES = max(1, os.cpu_count() // 2)
 print(f'Number of CPU processes: {NUMBER_OF_PROCESSES}\n')
 
-dataset = load_dataset('HuggingFaceFW/fineweb-edu', name='sample-10BT', split='train', cache_dir='./cache', num_proc=NUMBER_OF_PROCESSES)
+dataset = load_dataset("HuggingFaceTB/smollm-corpus", 'cosmopedia-v2', split='train', cache_dir='./cache', num_proc=NUMBER_OF_PROCESSES)
 
 tokenizer = Tokenizer('./tokenizer.model')
 PAD_TOKEN_ID = tokenizer.pad_id
@@ -25,9 +25,20 @@ CHUNKSIZE = 16
 print(f'\nPreparing dataset:\n')
 
 def tokenize(doc):
-    eot = tokenizer.special_tokens['<|end_of_text|>']
-    tokens = [eot]
-    tokens.extend(tokenizer.encode(doc['text']))
+    bot = tokenizer.special_tokens['<|begin_of_text|>']
+    sh = tokenizer.special_tokens['<|start_header_id|>']
+    eh = tokenizer.special_tokens['<|end_header_id|>']
+    eot = tokenizer.special_tokens['<|eot_id|>']
+
+    tokens = [bot, sh]
+    tokens.extend(tokenizer.encode('user'))
+    tokens.extend([eh])
+    tokens.extend(tokenizer.encode('\n' + doc['prompt']))
+    tokens.extend([eot, sh])
+    tokens.extend(tokenizer.encode('assistant'))
+    tokens.extend([eh])
+    tokens.extend(tokenizer.encode('\n' + doc['text']))
+    tokens.extend([eot])
     tokens_np = np.array(tokens)
     return tokens_np
 
@@ -36,7 +47,7 @@ def get_progress_bar(shard_size):
 
 def get_filename(shard_index):
     split = 'val' if shard_index == 0 else 'train'
-    return os.path.join(DATA_CACHE_DIR, f'edufineweb_{split}_{shard_index:06d}')
+    return os.path.join(DATA_CACHE_DIR, f'cosmopedia_{split}_{shard_index:06d}')
 
 with mp.Pool(NUMBER_OF_PROCESSES) as pool:
     shard_size = int(1e8)

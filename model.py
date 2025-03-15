@@ -355,14 +355,18 @@ class Transformer(nn.Module):
         temperature=0.6,
         top_p=0.9,
         full_seq=False,
-        device='cpu'
+        device='cpu',
+        is_instruct=False
     ):
         if not isinstance(texts, list):
             texts = [texts]
 
         tokenizer = self.config.tokenizer
 
-        prompt_tokens = [tokenizer.encode(text) for text in texts]
+        if is_instruct:
+            prompt_tokens = [tokenizer.encode_instruct(text) for text in texts]
+        else:
+            prompt_tokens = [tokenizer.encode(text) for text in texts]
         
         generation_tokens = self.generate(
             prompt_tokens=prompt_tokens,

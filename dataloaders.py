@@ -10,7 +10,7 @@ def load_tokens(filename):
     ptt = torch.tensor(npt, dtype=torch.long)
     return ptt
 
-class DataLoaderLite:
+class CustomDataLoader:
     def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle=False):
         self.B = batch_size
         self.S = sequence_length
@@ -53,7 +53,7 @@ class DataLoaderLite:
 
 
 def init_data_loaders(batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, use_shuffle):
-    train_loader = DataLoaderLite(
+    train_loader = CustomDataLoader(
         batch_size=batch_size,
         sequence_length=sequence_length,
         is_master_process=is_master_process,
@@ -63,7 +63,7 @@ def init_data_loaders(batch_size, sequence_length, is_master_process, process_ra
         split='train',
         use_shuffle=use_shuffle
     )
-    val_loader = DataLoaderLite(
+    val_loader = CustomDataLoader(
         batch_size=batch_size,
         sequence_length=sequence_length,
         is_master_process=is_master_process,

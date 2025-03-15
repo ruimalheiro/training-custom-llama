@@ -9,14 +9,16 @@ from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 
-def load_model(checkpoint_dir, checkpoint, model, optimizer=None, wait_time=5, is_master_process=True):
+def load_model(checkpoint_dir, checkpoint, model, optimizer=None, reset_optimizer=False, force_start_step=None, wait_time=5, is_master_process=True):
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint)
     state = torch.load(checkpoint_path)
     step = state['step'] + 1
     loss = state['val_loss']
     model.load_state_dict(state['model'])
-    if optimizer is not None:
+    if optimizer is not None and not reset_optimizer:
         optimizer.load_state_dict(state['optimizer'])
+    if force_start_step is not None:
+        step = force_start_step
 
     if is_master_process:
         print('Model and optimizer loaded')

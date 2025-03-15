@@ -71,3 +71,18 @@ class Tokenizer:
 
     def decode(self, t):
         return self.model.decode(t)
+
+    def encode_instruct(self, s):
+        bot = self.special_tokens['<|begin_of_text|>']
+        sh = self.special_tokens['<|start_header_id|>']
+        eh = self.special_tokens['<|end_header_id|>']
+        eot = self.special_tokens['<|eot_id|>']
+
+        tokens = [bot, sh]
+        tokens.extend(self.encode('user'))
+        tokens.extend([eh])
+        tokens.extend(self.encode('\n' + s))
+        tokens.extend([eot, sh])
+        tokens.extend(self.encode('assistant'))
+        tokens.extend([eh])
+        return tokens
