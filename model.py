@@ -356,17 +356,22 @@ class Transformer(nn.Module):
         top_p=0.9,
         full_seq=False,
         device='cpu',
-        is_instruct=False
+        is_instruct=False,
+        return_result=False,
+        skip_encoding=False
     ):
         if not isinstance(texts, list):
             texts = [texts]
 
         tokenizer = self.config.tokenizer
 
-        if is_instruct:
-            prompt_tokens = [tokenizer.encode_instruct(text) for text in texts]
+        if not skip_encoding:
+            if is_instruct:
+                prompt_tokens = [tokenizer.encode_instruct(text) for text in texts]
+            else:
+                prompt_tokens = [tokenizer.encode(text) for text in texts]
         else:
-            prompt_tokens = [tokenizer.encode(text) for text in texts]
+            prompt_tokens = texts
         
         generation_tokens = self.generate(
             prompt_tokens=prompt_tokens,
@@ -381,11 +386,18 @@ class Transformer(nn.Module):
 
         results = [tokenizer.decode(validate_token(t)) for t in generation_tokens]
 
-        print('-------------------------------------------')
+        outputs = []
+
+        if return_result is False:
+            print('-------------------------------------------')
 
         for text, result in zip(texts, results):
-            print(''.join([text, result]) + '<|FAKE_END|>')
-        print('-------------------------------------------')
+            if return_result is False:
+                print(''.join([text, result]) + '<|FAKE_END|>')
+            outputs.append(result)
+        if return_result is False:
+            print('-------------------------------------------')
+        return outputs
 
     def print_model_params(self, return_text=False):
         NUMBER_OF_PARAMETERS_LABEL = round(sum(p.numel() for p in self.parameters())/1e6), 'M parameters'
