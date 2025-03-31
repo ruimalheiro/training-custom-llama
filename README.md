@@ -79,11 +79,11 @@ The file `config.py` defines all the environment variables required.
     ```
 - To train on **1 or more GPUs** run:
     ```
-    torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py
+    export OMP_NUM_THREADS=1 && torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py
     ```
     - More details on torchrun [here](https://pytorch.org/docs/stable/elastic/run.html)
 - To load a checkpoint and continue training, pass the flag to any of the above commands. E.g.:
     ```
-    torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py --checkpoint <CHECKPOINT_FILE_NAME>
+    export OMP_NUM_THREADS=1 && torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py --checkpoint <CHECKPOINT_FILE_NAME>
     ```
     - NOTE: This will also load the optimizer and the step where it was. You can reset the optimizer with the flag `--reset-optimizer` and set the start step with the flag `--start-step`. E.g.: `--start-step 10`
