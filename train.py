@@ -117,11 +117,19 @@ train_loader, val_loader = init_data_loaders(
 assert total_batch_size % (model_config.max_batch_size * model_config.max_seq_len) == 0
 
 grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
-if is_master_process:
-    print(f'total batch size: {total_batch_size}')
-    print(f'calculated gradient accumulation steps: {grad_accum_steps}')
 
-print(f'I am GPU: {ddp_rank} and I am ready to go brrr :)')
+# max_steps not set
+if max_steps == -1:
+    total_tokens = train_loader.calculate_max_tokens()
+    max_steps = total_tokens // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
+
+if is_master_process:
+    print(f'max steps: {max_steps}')
+    print(f'total batch size: {total_batch_size}')
+    print(f'calculated gradient accumulation steps: {grad_accum_steps}\n')
+
+barrier()
+print(f'I am GPU: {ddp_rank} and I am ready to go brrr :)\n')
 
 teacher_model = None
 if is_model_distillation:

@@ -38,7 +38,7 @@ class TrainConfig(BaseSettings):
     min_lr: float = Field(alias='MIN_LR')
     warmup_steps: int = Field(alias='WARMUP_STEPS')
     weight_decay: float = Field(alias='WEIGHT_DECAY')
-    max_steps: int = Field(alias='MAX_STEPS')
+    max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     is_instruct_training: bool = Field(default=False, alias='IS_INSTRUCT_TRAINING')
     is_model_distillation: bool = Field(alias='IS_MODEL_DISTILLATION')

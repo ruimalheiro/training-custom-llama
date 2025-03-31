@@ -16,7 +16,9 @@ class CustomDataLoader:
         self.S = sequence_length
         self.process_rank = process_rank
         self.num_processes = num_processes
+        self.data_root = data_root
         assert split in {'train', 'val'}
+        self.split = split
         self.use_shuffle = use_shuffle
 
         shards = os.listdir(data_root)
@@ -31,6 +33,11 @@ class CustomDataLoader:
             print(f'found {len(shards)} shards for split {split}')
 
         self.reset()
+
+    def calculate_max_tokens(self):
+        total_tokens = (len(self.shards) - 1) * 1e8
+        total_tokens += np.load(self.shards[-1]).size
+        return int(total_tokens)
 
     def reset(self):
         self.current_shard = 0
