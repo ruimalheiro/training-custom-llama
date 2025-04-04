@@ -9,6 +9,9 @@ from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 
+def print_model_config(config):
+    print(json.dumps(config, indent=4))
+
 def load_model(checkpoint_dir, checkpoint, model, optimizer=None, reset_optimizer=False, force_start_step=None, wait_time=5, is_master_process=True):
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint)
     state = torch.load(checkpoint_path)
@@ -21,17 +24,29 @@ def load_model(checkpoint_dir, checkpoint, model, optimizer=None, reset_optimize
         step = force_start_step
 
     if is_master_process:
-        print('Model and optimizer loaded')
+        print('\nModel loading')
+        print('----------------------------------------')
+        print(f'model loaded from checkpoint: "{checkpoint}"')
+        if not reset_optimizer:
+            print(f'optimizer loaded')
+
         try:
-            print(json.dumps(state['config'], indent=4))
+            print('\nModel config')
+            print('----------------------------------------')
+            print_model_config(state['config'])
         except:
             print('Error printing the config. Potential serialization problem. Should be resolved in the next save attempt.')
-        print(f'Resuming from step: {step}')
+        if step > 0:
+            print(f'\nResuming from step: {step}')
+        else:
+            print(f'\nStarting from step: 0')
         print(f'Last calculated loss: {loss}')
     
+    # Delete large state file to free memory
+    del state
     if torch.cuda.is_available():
         if is_master_process:
-            print('Clearing cache...')
+            print('Clearing cache...\n')
         torch.cuda.empty_cache()
         time.sleep(wait_time)
     
@@ -93,14 +108,13 @@ def init_multi_gpu(seed=None):
             device = 'cuda'
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             device = 'mps'
-    
-    if is_master_process:
-        print(f'Using device: {device}')
 
     device_type = 'cuda' if device.startswith('cuda') else 'cpu'
 
     if is_master_process:
-        print(f'Using aux device type: {device_type}')
+        print(f'\nDevice setup:')
+        print('----------------------------------------')
+        print(f'Using device type: {device_type}\n')
 
     if seed is not None:
         torch.manual_seed(seed)
@@ -119,11 +133,11 @@ def prepare_model_for_ddp(model, ddp_local_rank):
 
 
 class WnbWrapper():
-    def __init__(self, disabled=False, is_master_process=True):
+    def __init__(self, enabled=True, is_master_process=True):
         self.WANDB = False
         self.is_master_process = is_master_process
 
-        if not disabled and self.is_master_process:
+        if enabled and self.is_master_process:
             WANDB_API_KEY = os.getenv('WANDB_API_KEY')
             if WANDB_API_KEY is not None:
                 wandb.login(key=WANDB_API_KEY)

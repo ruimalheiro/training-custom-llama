@@ -8,7 +8,7 @@ import math
 from torch.distributed import broadcast, barrier, destroy_process_group
 from tokenizer import Tokenizer
 from model import Transformer, ModelConfig
-from model_utils import save_model, load_model, init_multi_gpu, prepare_model_for_ddp, WnbWrapper
+from model_utils import print_model_config, save_model, load_model, init_multi_gpu, prepare_model_for_ddp, WnbWrapper
 from dataloaders import init_data_loaders
 from hellaswag_utils import (
     iterate_hellaswag_val_examples,
@@ -32,7 +32,7 @@ save_checkpoints_path = config.save_checkpoints_path
 save_checkpoints = config.save_checkpoints
 
 # wnb
-wnb_disabled = config.wnb_disabled
+wnb_enabled = config.wnb_enabled
 wnb_project_name = config.wnb_project_name
 
 # tokenizer model path
@@ -123,13 +123,61 @@ if max_steps == -1:
     total_tokens = train_loader.calculate_max_tokens()
     max_steps = total_tokens // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
 
-if is_master_process:
-    print(f'max steps: {max_steps}')
-    print(f'total batch size: {total_batch_size}')
-    print(f'calculated gradient accumulation steps: {grad_accum_steps}\n')
+test_generation_prompts = test_pretrain_generation_prompts
+if is_instruct_training:
+    test_generation_prompts = test_instruct_generation_prompts
 
-barrier()
-print(f'I am GPU: {ddp_rank} and I am ready to go brrr :)\n')
+if is_master_process:
+    print('\nGeneral training configuration:')
+    print('----------------------------------------')
+    print(f'dataloader data path: "{dataloader_root_path}"')
+    print(f'hellaswag data path: "{hellaswag_path}"')
+
+    if args.checkpoint is not None:
+        print(f'loading checkpoint data path: "{load_checkpoints_path}"')
+
+    if save_checkpoints:
+        print(f'saving checkpoint data path: "{save_checkpoints_path}"')
+
+    if wnb_enabled:
+        print(f'weights and biases project name: "{wnb_project_name}"')
+
+    print(f'tokenizer loaded from: "{tokenizer_checkpoint_path}"')
+
+    print(f'total batch size: {total_batch_size}')
+    print(f'max learning rate: {max_lr}')
+    print(f'min learning rate: {min_lr}')
+    print(f'warmup steps: {warmup_steps}')
+    print(f'weight decay: {weight_decay}')
+    print(f'max steps: {max_steps}')
+    print(f'early stopping patience: {early_stopping_patience}')
+    if is_instruct_training:
+        print(f'using instruct format: {is_instruct_training}')
+    if is_model_distillation:
+        print(f'performing model distillation: {is_model_distillation}')
+        print(f'distillation temperature set to: {distillation_temperature}')
+        print(f'teacher model checkpoint: {teacher_model_checkpoint}')
+
+    print('\nEvaluation Config')
+    print('----------------------------------------')
+    print(f'number of steps between validation: {validate_every_x_steps}')
+    print(f'number of validating steps: {val_steps}')
+    print(f'number of steps between hellaswag validation: {hellaswag_every_x_steps}')
+    print(f'number of hellaswag examples: {hellagswag_number_of_examples}')
+    print(f'number of steps between model output generations: {generate_every_x_steps}')
+    print(f'max length for the generated text from each prompt: {max_test_gen_len}')
+    print(f'generation prompts:')
+    for example in test_generation_prompts:
+        print(f'=> "{example}"')
+
+    print('\nDerived properties')
+    print('----------------------------------------')
+    print(f'gradient accumulation steps: {grad_accum_steps}')
+
+    if args.checkpoint is None:
+        print('\nModel config')
+        print('----------------------------------------')
+        print_model_config(model_config.to_dict())
 
 teacher_model = None
 if is_model_distillation:
@@ -151,7 +199,7 @@ if args.checkpoint is not None:
         is_master_process=is_master_process
     )
 
-wnb = WnbWrapper(disabled=wnb_disabled, is_master_process=is_master_process)
+wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
 wnb.init(wnb_project_name, config={
     'batch_size': model_config.max_batch_size,
     'sequence_length': model_config.max_seq_len,
@@ -177,9 +225,8 @@ def distillation_loss(teacher_logits, student_logits, temperature=1.0):
     kl_divergence = F.kl_div(student_log_probabilities, teacher_probabilities, reduction='batchmean') * (temperature ** 2)
     return kl_divergence
 
-test_generation_prompts = test_pretrain_generation_prompts
-if is_instruct_training:
-    test_generation_prompts = test_instruct_generation_prompts
+barrier()
+print(f'\nGPU: {ddp_rank} is ready.')
 
 best_val_loss = float('inf')
 epochs_no_improve = 0

@@ -26,7 +26,7 @@ class TrainConfig(BaseSettings):
     save_checkpoints: bool = Field(default=False, alias='SAVE_CHECKPOINTS')
 
     # wnb
-    wnb_disabled: bool = Field(default=True, alias='WNB_DISABLED')
+    wnb_enabled: bool = Field(default=False, alias='WNB_ENABLED')
     wnb_project_name: str = Field(alias='WNB_PROJECT_NAME')
 
     # tokenizer model path

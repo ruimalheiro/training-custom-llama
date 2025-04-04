@@ -251,16 +251,20 @@ class Transformer(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        if is_master_process:
-            print(f'num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters')
-            print(f'num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters')
 
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and 'cuda' in device
+
+        total_trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+
         if is_master_process:
+            print(f'\nOptimizer configuration:')
+            print('----------------------------------------')
+            print(f'num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters')
+            print(f'num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters')
             print(f'using fused AdamW: {use_fused}')
-            total_trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-            print(f'Trainable parameters: {total_trainable_params}\n')
+            print(f'trainable parameters: {total_trainable_params}')
+
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=[0.9, 0.95], eps=1e-8, fused=use_fused)
         return optimizer
 

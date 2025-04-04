@@ -60,6 +60,9 @@ class CustomDataLoader:
 
 
 def init_data_loaders(batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, use_shuffle):
+    if is_master_process:
+        print('Data Loaders:')
+        print('----------------------------------------')
     train_loader = CustomDataLoader(
         batch_size=batch_size,
         sequence_length=sequence_length,
@@ -80,4 +83,5 @@ def init_data_loaders(batch_size, sequence_length, is_master_process, process_ra
         split='val',
         use_shuffle=use_shuffle
     )
+
     return train_loader, val_loader
