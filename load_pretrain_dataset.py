@@ -9,7 +9,7 @@ from config import config
 
 NUMBER_OF_PROCESSES = max(1, os.cpu_count() // 2)
 if config.number_of_cpu_processes != 0:
-    NUMBER_OF_PROCESSES = max(1, config.number_of_cpu_processes)
+    NUMBER_OF_PROCESSES = max(1, min(config.number_of_cpu_processes, os.cpu_count()))
 print(f'Number of CPU processes: {NUMBER_OF_PROCESSES}\n')
 
 dataset = load_dataset(
