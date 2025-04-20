@@ -6,4 +6,5 @@ blobfile
 wandb
 pydantic
 pydantic-settings
-torch==2.3.0
+torch
+tqdm
