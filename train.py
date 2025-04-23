@@ -188,8 +188,9 @@ if is_model_distillation:
 optimizer = raw_model.configure_optimizers(weight_decay=weight_decay, learning_rate=max_lr, device=device, is_master_process=is_master_process)
 
 start_step = 0
+best_val_loss = float('inf')
 if args.checkpoint is not None:
-    model, optimizer, start_step = load_model(
+    model, optimizer, start_step, best_loss = load_model(
         load_checkpoints_path,
         args.checkpoint,
         raw_model,
@@ -198,6 +199,9 @@ if args.checkpoint is not None:
         force_start_step=args.start_step,
         is_master_process=is_master_process
     )
+
+    if best_loss < best_val_loss:
+        best_val_loss = best_loss
 
 wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
 wnb.init(wnb_project_name, config={
@@ -228,7 +232,6 @@ def distillation_loss(teacher_logits, student_logits, temperature=1.0):
 barrier()
 print(f'\nGPU: {ddp_rank} is ready.')
 
-best_val_loss = float('inf')
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
 for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc='Training'):

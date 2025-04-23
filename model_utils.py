@@ -50,7 +50,7 @@ def load_model(checkpoint_dir, checkpoint, model, optimizer=None, reset_optimize
         torch.cuda.empty_cache()
         time.sleep(wait_time)
     
-    return model, optimizer, step
+    return model, optimizer, step, loss
 
 def save_model(checkpoint_dir, model, config, step, val_loss_accum, optimizer):
     checkpoint_path = os.path.join(checkpoint_dir, f'model_{step}.pt')
