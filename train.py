@@ -111,7 +111,8 @@ train_loader, val_loader = init_data_loaders(
     process_rank=ddp_rank,
     num_processes=ddp_world_size,
     data_root=dataloader_root_path,
-    use_shuffle=True
+    is_instruct_training=is_instruct_training,
+    pad_id=model_config.pad_token_id
 )
 
 assert total_batch_size % (model_config.max_batch_size * model_config.max_seq_len) == 0
@@ -120,8 +121,13 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 
 # max_steps not set
 if max_steps == -1:
-    total_tokens = train_loader.calculate_max_tokens()
-    max_steps = total_tokens // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
+    if not is_instruct_training:
+        total_tokens = train_loader.calculate_max_tokens()
+        max_steps = total_tokens // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
+    else:
+        number_examples = train_loader.num_examples()
+        number_of_processed_examples_per_step = model_config.max_batch_size * ddp_world_size * grad_accum_steps
+        max_steps = math.ceil(number_examples / number_of_processed_examples_per_step)
 
 test_generation_prompts = test_pretrain_generation_prompts
 if is_instruct_training:
@@ -229,7 +235,8 @@ def distillation_loss(teacher_logits, student_logits, temperature=1.0):
     kl_divergence = F.kl_div(student_log_probabilities, teacher_probabilities, reduction='batchmean') * (temperature ** 2)
     return kl_divergence
 
-barrier()
+if ddp:
+    barrier()
 print(f'\nGPU: {ddp_rank} is ready.')
 
 epochs_no_improve = 0
@@ -280,7 +287,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         if ddp:
             broadcast(abort_if_no_improve, src=0)
 
-    if step > 0 and step % hellaswag_every_x_steps == 0 or last_step:
+    if not is_instruct_training and step > 0 and step % hellaswag_every_x_steps == 0 or last_step:
         model.eval()
         num_correct_norm = 0
         num_total = 0
@@ -329,6 +336,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
     model.train()
     optimizer.zero_grad()
     loss_acc = 0.0
+    tokens_real = 0 # for instruct
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
@@ -350,6 +358,9 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
         loss.backward()
 
+        if is_instruct_training:
+            tokens_real += (y != -100).sum().item()
+
     if ddp:
         dist.all_reduce(loss_acc, op=dist.ReduceOp.AVG)
 
@@ -365,7 +376,11 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
     t1 = time.time()
     dt = (t1 - t0)
-    tokens_per_sec = (train_loader.B * train_loader.S * grad_accum_steps * ddp_world_size) / (t1 - t0)
+
+    if not is_instruct_training:
+        tokens_per_sec = (train_loader.B * train_loader.S * grad_accum_steps * ddp_world_size) / dt
+    else:
+        tokens_per_sec = (tokens_real * ddp_world_size) / dt
 
     if is_master_process:
         print(f'step: {step:4d} | loss: {loss_acc.item():.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')

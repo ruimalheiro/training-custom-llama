@@ -47,7 +47,7 @@ class Tokenizer:
 
         self.bos_id = self.special_tokens['<|begin_of_text|>']
         self.eos_id = self.special_tokens['<|end_of_text|>']
-        self.pad_id = -1
+        self.pad_id = self.special_tokens['<|reserved_special_token_0|>']
         self.stop_tokens = {
             self.special_tokens['<|end_of_text|>'],
             self.special_tokens['<|eot_id|>'],

@@ -3,7 +3,6 @@ import glob
 import re
 import multiprocessing as mp
 import numpy as np
-import time
 import sys
 
 from tqdm import tqdm

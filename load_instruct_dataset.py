@@ -3,7 +3,6 @@ import numpy as np
 
 from datasets import load_dataset
 from tokenizer import Tokenizer
-from data_preparation_utils import prepare_dataset
 from config import config
 
 
@@ -30,31 +29,42 @@ def tokenize(doc):
     eh = tokenizer.special_tokens['<|end_header_id|>']
     eot = tokenizer.special_tokens['<|eot_id|>']
 
-    tokens = [bot]
-    tokens.extend([sh])
-    tokens.extend(tokenizer.encode('system'))
-    tokens.extend([eh])
-    tokens.extend(tokenizer.encode('\n' + 'You are a helpful AI assistant'))
-    tokens.extend([eot])
+    tokens, labels = [], []
+    def push(tok_ids, is_assistant):
+        tokens.extend(tok_ids)
+        if is_assistant:
+            labels.extend(tok_ids)
+        else:
+            labels.extend([-100] * len(tok_ids))
+
+    push([bot], False)
+    push([sh], False)
+    push(tokenizer.encode('system'), False)
+    push([eh], False)
+    push(tokenizer.encode('\n' + 'You are a helpful AI assistant'), False)
+    push([eot], False)
 
     for interaction in doc['conversation']:
         role = interaction['role']
         content = interaction['content']
 
-        tokens.extend([sh])
-        tokens.extend(tokenizer.encode(role))
-        tokens.extend([eh])
-        tokens.extend(tokenizer.encode('\n' + content))
-        tokens.extend([eot])
+        push([sh], False)
+        push(tokenizer.encode(role), False)
+        push([eh], False)
+        push(tokenizer.encode('\n' + content), role == 'assistant')
+        push([eot], False)
 
-    tokens_np = np.array(tokens)
-    return tokens_np
-        
-prepare_dataset(
-    dataset=dataset,
-    tokenize_function=tokenize,
-    target_folder=config.instruct_dataset_target_path,
-    shard_file_prefix=config.instruct_dataset_shard_prefix,
-    number_of_processes=NUMBER_OF_PROCESSES,
-    chunksize=16
+    input_ids = np.array(tokens, dtype=np.uint32)
+    labels = np.array([-100] + labels[:-1], dtype=np.int32)
+
+    return { 'input_ids': input_ids, 'labels': labels }
+
+dataset = dataset.map(
+    tokenize,
+    num_proc=NUMBER_OF_PROCESSES,
+    remove_columns=dataset.column_names
 )
+
+train_val = dataset.train_test_split(test_size=0.01, seed=42)
+train_val['train'].save_to_disk(os.path.join(config.instruct_dataset_target_path, 'train'))
+train_val['test'] .save_to_disk(os.path.join(config.instruct_dataset_target_path, 'val'))

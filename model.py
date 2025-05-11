@@ -5,7 +5,7 @@ import json
 import inspect
 
 from torch import nn
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass
 
 
 def precompute_freqs_complex_exponential(dim, sequence_length, theta=10000.0):
@@ -175,7 +175,8 @@ class Transformer(nn.Module):
 
         self.tok_embeddings = nn.Embedding(
             config.vocab_size,
-            config.dim
+            config.dim,
+            padding_idx=config.pad_token_id
         )
 
         self.layers = nn.ModuleList()
@@ -400,7 +401,10 @@ class Transformer(nn.Module):
         for text, result in zip(texts, results):
             if return_result is False:
                 print(''.join([text, result]) + '<|FAKE_END|>')
-            outputs.append(result)
+            if full_seq:
+                outputs.append(text + result)
+            else:
+                outputs.append(result)
         if return_result is False:
             print('-------------------------------------------')
         return outputs

@@ -2,6 +2,11 @@ import os
 import numpy as np
 import torch
 import random
+import datasets
+
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.utils.rnn import pad_sequence
 
 
 def load_tokens(filename):
@@ -10,7 +15,7 @@ def load_tokens(filename):
     ptt = torch.tensor(npt, dtype=torch.long)
     return ptt
 
-class CustomDataLoader:
+class PretrainingDataLoader:
     def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle=False):
         self.B = batch_size
         self.S = sequence_length
@@ -58,30 +63,140 @@ class CustomDataLoader:
             self.current_position = self.B * self.S * self.process_rank
         return x, y
 
+class InstructDataLoader:
+    def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle, pad_id, drop_last):
+        self.B = batch_size
+        self.S = sequence_length
 
-def init_data_loaders(batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, use_shuffle):
-    if is_master_process:
-        print('Data Loaders:')
-        print('----------------------------------------')
-    train_loader = CustomDataLoader(
-        batch_size=batch_size,
-        sequence_length=sequence_length,
-        is_master_process=is_master_process,
-        process_rank=process_rank,
-        num_processes=num_processes,
-        data_root=data_root,
-        split='train',
-        use_shuffle=use_shuffle
-    )
-    val_loader = CustomDataLoader(
-        batch_size=batch_size,
-        sequence_length=sequence_length,
-        is_master_process=is_master_process,
-        process_rank=process_rank,
-        num_processes=num_processes,
-        data_root=data_root,
-        split='val',
-        use_shuffle=use_shuffle
-    )
+        dataset = datasets.load_from_disk(os.path.join(data_root, split))
+        if is_master_process:
+            print(f'found {len(dataset)} examples for {split}')
+
+        assert isinstance(dataset, datasets.Dataset)
+
+        self.sampler = DistributedSampler(
+            dataset,
+            num_replicas=num_processes,
+            rank=process_rank,
+            shuffle=use_shuffle,
+            seed=42
+        )
+
+        def collate(examples):
+            ids = [torch.tensor(e['input_ids']) for e in examples]
+            labels = [torch.tensor(e['labels']) for e in examples]
+
+            ids = pad_sequence(
+                ids,
+                batch_first=True,
+                padding_value=int(pad_id)
+            )
+            labels = pad_sequence(
+                labels,
+                batch_first=True,
+                padding_value=-100
+            )
+            if ids.size(1) > sequence_length:
+                ids  = ids[:, -sequence_length:]
+                labels = labels[:, -sequence_length:]
+
+            return ids, labels
+
+        self._dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=self.sampler,
+            collate_fn=collate,
+            drop_last=drop_last,
+            pin_memory=True
+        )
+        self._iterator = iter(self._dataloader)
+
+    def next_batch(self):
+        try:
+            return next(self._iterator)
+        except StopIteration:
+            self.reset()
+            return next(self._iterator)
+
+    def reset(self):
+        if hasattr(self.sampler, 'set_epoch'):
+            update_epoch = 0
+            if hasattr(self.sampler, 'epoch'):
+                update_epoch = self.sampler.epoch + 1
+            self.sampler.set_epoch(update_epoch)
+        self._iterator = iter(self._dataloader)
+
+    def num_examples(self):
+        return len(self._dataloader.dataset)
+
+    def calculate_max_tokens(self):
+        raise NotImplementedError('Not applicable for dialogue loader')
+
+def init_data_loaders(
+    batch_size,
+    sequence_length,
+    is_master_process,
+    process_rank,
+    num_processes,
+    data_root,
+    is_instruct_training=False,
+    pad_id=None
+):
+    if not is_instruct_training:
+        if is_master_process:
+            print('Pretraining Data Loaders:')
+            print('----------------------------------------')
+        train_loader = PretrainingDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='train',
+            use_shuffle=True
+        )
+        val_loader = PretrainingDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='val',
+            use_shuffle=True
+        )
+    else:
+        assert pad_id is not None
+
+        if is_master_process:
+            print('Instruct Finetuning Data Loaders:')
+            print('----------------------------------------')
+
+        train_loader = InstructDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='train',
+            use_shuffle=True,
+            pad_id=pad_id,
+            drop_last=True,
+        )
+        val_loader = InstructDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='val',
+            use_shuffle=False,
+            pad_id=pad_id,
+            drop_last=False,
+        )
 
     return train_loader, val_loader
