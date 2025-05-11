@@ -85,4 +85,5 @@ class Tokenizer:
         tokens.extend([eot, sh])
         tokens.extend(self.encode('assistant'))
         tokens.extend([eh])
+        tokens.extend(self.encode('\n'))
         return tokens
