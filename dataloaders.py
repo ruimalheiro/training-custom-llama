@@ -15,7 +15,7 @@ def load_tokens(filename):
     ptt = torch.tensor(npt, dtype=torch.long)
     return ptt
 
-class PretrainingDataLoader:
+class PretrainDataLoader:
     def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle=False):
         self.B = batch_size
         self.S = sequence_length
@@ -78,8 +78,7 @@ class InstructDataLoader:
             dataset,
             num_replicas=num_processes,
             rank=process_rank,
-            shuffle=use_shuffle,
-            seed=42
+            shuffle=use_shuffle
         )
 
         def collate(examples):
@@ -145,9 +144,9 @@ def init_data_loaders(
 ):
     if not is_instruct_training:
         if is_master_process:
-            print('Pretraining Data Loaders:')
+            print('Pretrain Data Loaders:')
             print('----------------------------------------')
-        train_loader = PretrainingDataLoader(
+        train_loader = PretrainDataLoader(
             batch_size=batch_size,
             sequence_length=sequence_length,
             is_master_process=is_master_process,
@@ -157,7 +156,7 @@ def init_data_loaders(
             split='train',
             use_shuffle=True
         )
-        val_loader = PretrainingDataLoader(
+        val_loader = PretrainDataLoader(
             batch_size=batch_size,
             sequence_length=sequence_length,
             is_master_process=is_master_process,

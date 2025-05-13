@@ -2,11 +2,12 @@ import os
 import requests
 
 from tqdm import tqdm
+from config import config
 
 
 HELLASWAG_VAL_URL = 'https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl'
 
-DATA_CACHE_DIR = os.path.join(os.getcwd(), 'dataset_hellaswag')
+DATA_CACHE_DIR = os.path.join(config.hellaswag_path)
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 DATA_FILENAME = os.path.join(DATA_CACHE_DIR, f'hellaswag_val.jsonl')

@@ -17,12 +17,16 @@ class TrainConfig(BaseSettings):
 
     number_of_cpu_processes: int = Field(default=0, alias='NUMBER_OF_CPU_PROCESSES')
 
-    dataloader_root_path: str = Field(alias='DATALOADER_ROOT_PATH')
+    pretrain_dataloader_root_path: str = Field(alias='PRETRAIN_DATALOADER_ROOT_PATH')
+    instruct_dataloader_root_path: str = Field(alias='INSTRUCT_DATALOADER_ROOT_PATH')
     hellaswag_path: str = Field(alias='HELLASWAG_PATH')
 
     # save / load path
-    load_checkpoints_path: str = Field(alias='LOAD_CHECKPOINTS_PATH')
-    save_checkpoints_path: str = Field(alias='SAVE_CHECKPOINTS_PATH')
+    pretrain_save_checkpoints_path: str = Field(alias='PRETRAIN_SAVE_CHECKPOINTS_PATH')
+    pretrain_load_checkpoints_path: str = Field(alias='PRETRAIN_LOAD_CHECKPOINTS_PATH')
+    instruct_save_checkpoints_path: str = Field(alias='INSTRUCT_SAVE_CHECKPOINTS_PATH')
+    instruct_load_checkpoints_path: str = Field(alias='INSTRUCT_LOAD_CHECKPOINTS_PATH')
+
     save_checkpoints: bool = Field(default=False, alias='SAVE_CHECKPOINTS')
 
     # wnb
@@ -40,6 +44,7 @@ class TrainConfig(BaseSettings):
     weight_decay: float = Field(alias='WEIGHT_DECAY')
     max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
+    early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
     is_instruct_training: bool = Field(default=False, alias='IS_INSTRUCT_TRAINING')
     is_model_distillation: bool = Field(alias='IS_MODEL_DISTILLATION')
     distillation_temperature: float = Field(alias='DISTILLATION_TEMPERATURE')

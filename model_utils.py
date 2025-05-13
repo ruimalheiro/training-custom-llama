@@ -60,7 +60,7 @@ def save_model(checkpoint_dir, model, config, step, val_loss_accum, optimizer):
         'step': step,
         'config': config.to_dict(),
         'optimizer': optimizer.state_dict(),
-        'val_loss': val_loss_accum.item()
+        'val_loss': val_loss_accum
     }
     torch.save(checkpoint, checkpoint_path)
     print(f'Saved model: {checkpoint_path}')
@@ -145,7 +145,7 @@ class WnbWrapper():
                 print('Wandb enabled.')
 
             
-    def init(self, project_name, *, job_name=False, config=None):
+    def init(self, project_name, *, job_name=None, config=None):
         if not self.WANDB:
             return
         

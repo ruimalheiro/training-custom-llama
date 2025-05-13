@@ -22,13 +22,21 @@ from config import config
 ##################################################
 ### CONFIGURATION ###
 
-# datasets path
-dataloader_root_path = config.dataloader_root_path
+# datasets path / save checkpoints path
+if config.is_instruct_training:
+    dataloader_root_path = config.instruct_dataloader_root_path
+    save_checkpoints_path = config.instruct_save_checkpoints_path
+else:
+    dataloader_root_path = config.pretrain_dataloader_root_path
+    save_checkpoints_path = config.pretrain_save_checkpoints_path
+
 hellaswag_path = config.hellaswag_path
 
-# save / load path
-load_checkpoints_path = config.load_checkpoints_path
-save_checkpoints_path = config.save_checkpoints_path
+# load path
+pretrain_checkpoints_path = config.pretrain_load_checkpoints_path
+instruct_checkpoints_path = config.instruct_load_checkpoints_path
+
+# save toggle
 save_checkpoints = config.save_checkpoints
 
 # wnb
@@ -46,6 +54,7 @@ warmup_steps = config.warmup_steps
 weight_decay = config.weight_decay
 max_steps = config.max_steps
 early_stopping_patience = config.early_stopping_patience
+early_stopping_patience_skip_steps = config.early_stopping_patience_skip_steps
 is_instruct_training = config.is_instruct_training
 is_model_distillation = config.is_model_distillation
 distillation_temperature = config.distillation_temperature
@@ -81,9 +90,10 @@ model_config = ModelConfig(
 
 ##################################################
 
-
+# Can be augmented with more useful options.
 parser = argparse.ArgumentParser(description='Training Script')
-parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint to load.')
+parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
+parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
 parser.add_argument('--reset-optimizer', action='store_true', help='Reset the optimizer state when loading a checkpoint.')
 parser.add_argument('--start-step', type=int, default=None, help='Starting step number for training.')
 
@@ -133,13 +143,22 @@ test_generation_prompts = test_pretrain_generation_prompts
 if is_instruct_training:
     test_generation_prompts = test_instruct_generation_prompts
 
+load_checkpoints_path = None
+checkpoint = None
+if args.pretrain_checkpoint:
+    load_checkpoints_path = pretrain_checkpoints_path
+    checkpoint = args.pretrain_checkpoint
+elif args.instruct_checkpoint:
+    load_checkpoints_path = instruct_checkpoints_path
+    checkpoint = args.instruct_checkpoint
+
 if is_master_process:
     print('\nGeneral training configuration:')
     print('----------------------------------------')
     print(f'dataloader data path: "{dataloader_root_path}"')
     print(f'hellaswag data path: "{hellaswag_path}"')
 
-    if args.checkpoint is not None:
+    if checkpoint is not None:
         print(f'loading checkpoint data path: "{load_checkpoints_path}"')
 
     if save_checkpoints:
@@ -180,7 +199,7 @@ if is_master_process:
     print('----------------------------------------')
     print(f'gradient accumulation steps: {grad_accum_steps}')
 
-    if args.checkpoint is None:
+    if checkpoint is None:
         print('\nModel config')
         print('----------------------------------------')
         print_model_config(model_config.to_dict())
@@ -195,10 +214,10 @@ optimizer = raw_model.configure_optimizers(weight_decay=weight_decay, learning_r
 
 start_step = 0
 best_val_loss = float('inf')
-if args.checkpoint is not None:
+if checkpoint is not None:
     model, optimizer, start_step, best_loss = load_model(
         load_checkpoints_path,
-        args.checkpoint,
+        checkpoint,
         raw_model,
         optimizer=optimizer,
         reset_optimizer=args.reset_optimizer,
@@ -206,7 +225,7 @@ if args.checkpoint is not None:
         is_master_process=is_master_process
     )
 
-    if best_loss < best_val_loss:
+    if best_loss < best_val_loss and not args.reset_optimizer:
         best_val_loss = best_loss
 
 wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
@@ -239,9 +258,16 @@ if ddp:
     barrier()
 print(f'\nGPU: {ddp_rank} is ready.')
 
+tqdm_label = 'Training'
+if is_instruct_training:
+    tqdm_label = 'Training (SFT)'
+
+if is_model_distillation:
+    tqdm_label += ' (Distil)'
+
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
-for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc='Training'):
+for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label):
     if abort_if_no_improve.item() == 1:
         print(f'Rank {ddp_rank} received stop signal.')
         break
@@ -252,32 +278,41 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
     if step > 0 and step % validate_every_x_steps == 0 or last_step:
         model.eval()
         val_loader.reset()
+
+        val_loss_sum = torch.tensor(0.0, device=device)
+        val_tok_sum = torch.tensor(0.0, device=device)
+
         with torch.no_grad():
-            val_loss_acc = 0.0
-            val_loss_steps = val_steps
-            for _ in tqdm(range(val_loss_steps), 'Validating'):
+            for _ in tqdm(range(val_steps), 'Validating'):
                 x, y = val_loader.next_batch()
                 x, y = x.to(device), y.to(device)
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    result = model(x, labels=y)
-                    logits, loss = result['logits'], result['loss']
-                loss  = loss / val_loss_steps
-                val_loss_acc += loss.detach()
-        if ddp:
-            dist.all_reduce(val_loss_acc, op=dist.ReduceOp.AVG)
-        if is_master_process:
-            print(f'validation loss: {val_loss_acc.item():.4f}')
+                    loss = model(x, labels=y)['loss']
 
-            if val_loss_acc.item() < best_val_loss:
-                best_val_loss = val_loss_acc.item()
+                n_valid = (y != -100).sum().float()
+                val_loss_sum += loss * n_valid
+                val_tok_sum += n_valid
+
+        if ddp:
+            dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(val_tok_sum, op=dist.ReduceOp.SUM)
+
+        val_ce = (val_loss_sum / val_tok_sum).item()
+
+        if is_master_process:
+            print(f'validation loss: {val_ce:.4f}')
+
+            if val_ce < best_val_loss:
+                best_val_loss = val_ce
                 epochs_no_improve = 0
             else:
-                epochs_no_improve += 1
-                print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_loss_acc.item()} - Attempts left: {early_stopping_patience - epochs_no_improve}')
+                if step > early_stopping_patience_skip_steps:
+                    epochs_no_improve += 1
+                    print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}')
 
             if save_checkpoints is True and epochs_no_improve == 0:
-                save_model(save_checkpoints_path, raw_model, model_config, step, val_loss_acc, optimizer)
-            wnb.log({'Validation Loss': val_loss_acc.item()})
+                save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer)
+            wnb.log({'Validation Loss': val_ce})
 
             stop_signal = torch.tensor([0], device=device)
             if epochs_no_improve == early_stopping_patience:
@@ -330,39 +365,54 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             test_generation_prompts,
             max_gen_len=max_test_gen_len,
             device=device,
-            is_instruct=is_instruct_training
+            is_instruct=is_instruct_training,
+            temperature=0.0,
+            top_p=1.0
         )
 
     model.train()
     optimizer.zero_grad()
-    loss_acc = 0.0
-    tokens_real = 0 # for instruct
+    train_loss_local_sum = 0.0
+    train_tok_local_sum = 0
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
 
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             result = model(x, labels=y)
-            logits, loss = result['logits'], result['loss']
+            loss = result['loss']
 
+        loss_scaled = loss / grad_accum_steps
         if is_model_distillation and teacher_model:
             with torch.no_grad():
-                teacher_result = teacher_model(input_ids=x)
-                teacher_logits = teacher_result.logits
+                teacher_logits = teacher_model(input_ids=x).logits
 
-            loss = distillation_loss(teacher_logits, logits, temperature=distillation_temperature)
+            loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
+            loss_scaled += loss_distil / grad_accum_steps
 
-        loss /= grad_accum_steps
-        loss_acc += loss.detach()
+        loss_scaled.backward()
+
+        n_valid = (y != -100).sum().item()
+        train_loss_local_sum += loss.item() * n_valid
+        train_tok_local_sum  += n_valid
+
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-        loss.backward()
 
-        if is_instruct_training:
-            tokens_real += (y != -100).sum().item()
+    train_loss_sum = train_loss_local_sum
+    train_tok_sum = train_tok_local_sum
 
     if ddp:
-        dist.all_reduce(loss_acc, op=dist.ReduceOp.AVG)
+        loss_sum = torch.tensor(train_loss_local_sum, device=device)
+        tok_sum  = torch.tensor(train_tok_local_sum,  device=device)
+
+        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(tok_sum,  op=dist.ReduceOp.SUM)
+
+        train_loss_sum = loss_sum.item()
+        train_tok_sum  = tok_sum.item()
+
+    train_ce = train_loss_sum / train_tok_sum
 
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
@@ -380,11 +430,11 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
     if not is_instruct_training:
         tokens_per_sec = (train_loader.B * train_loader.S * grad_accum_steps * ddp_world_size) / dt
     else:
-        tokens_per_sec = (tokens_real * ddp_world_size) / dt
+        tokens_per_sec = train_tok_sum  / dt
 
     if is_master_process:
-        print(f'step: {step:4d} | loss: {loss_acc.item():.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
-        wnb.log({'Train Loss': loss_acc.item()})
+        print(f'step: {step:4d} | train loss: {train_ce:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
+        wnb.log({'Train Loss': train_ce})
 
 if ddp:
     barrier()
