@@ -51,11 +51,12 @@ def tokenize(doc):
         push([sh], False)
         push(tokenizer.encode(role), False)
         push([eh], False)
-        push(tokenizer.encode('\n' + content), role == 'assistant')
+        push(tokenizer.encode('\n'), False)
+        push(tokenizer.encode(content), role == 'assistant')
         push([eot], False)
 
     input_ids = np.array(tokens, dtype=np.uint32)
-    labels = np.array([-100] + labels[:-1], dtype=np.int32)
+    labels = np.array(labels[1:] + [-100], dtype=np.int32)
 
     return { 'input_ids': input_ids, 'labels': labels }
 
