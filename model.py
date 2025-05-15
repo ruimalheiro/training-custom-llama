@@ -399,10 +399,13 @@ class Transformer(nn.Module):
             print('-------------------------------------------')
 
         for text, result in zip(texts, results):
+            prompt_and_result = text + result
+            if is_instruct:
+                prompt_and_result = text + ' ' + result
             if return_result is False:
-                print(''.join([text, result]) + '<|FAKE_END|>')
+                print(prompt_and_result + '<|FAKE_END|>')
             if full_seq:
-                outputs.append(text + result)
+                outputs.append(prompt_and_result)
             else:
                 outputs.append(result)
         if return_result is False:
