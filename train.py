@@ -267,6 +267,7 @@ if is_model_distillation:
 
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
+early_stopping_patience_skip_steps += start_step
 for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label):
     if abort_if_no_improve.item() == 1:
         print(f'Rank {ddp_rank} received stop signal.')
@@ -305,13 +306,18 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             if val_ce < best_val_loss:
                 best_val_loss = val_ce
                 epochs_no_improve = 0
+
+                if save_checkpoints is True:
+                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer)
             else:
                 if step > early_stopping_patience_skip_steps:
                     epochs_no_improve += 1
                     print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}')
+                else:
+                    print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}')
 
-            if save_checkpoints is True and epochs_no_improve == 0:
-                save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer)
+                print('Skipping save checkpoint...')
+
             wnb.log({'Validation Loss': val_ce})
 
             stop_signal = torch.tensor([0], device=device)
