@@ -48,7 +48,7 @@ def find_last_shard_info(data_cache_dir, shard_file_prefix):
             shard_index = int(match.group(2))
             with open(f, 'rb') as fh:
                 version = np.lib.format.read_magic(fh)
-                shape, fortran_order, dtype = np.lib.format._read_array_header(fh, version)
+                shape, _, _ = np.lib.format._read_array_header(fh, version)
                 shard_size = shape[0]
 
             shard_sizes[shard_index] = shard_size

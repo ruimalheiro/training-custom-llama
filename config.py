@@ -10,6 +10,7 @@ class TrainConfig(BaseSettings):
     pretrain_dataset_shard_prefix: str = Field(alias='HF_PRETRAIN_DATASET_SHARD_PREFIX')
 
     instruct_dataset: str = Field(alias='HF_INSTRUCT_DATASET')
+    instruct_dataset_selector_key: str = Field(alias='HF_INSTRUCT_DATASET_SELECTOR_KEY')
     instruct_dataset_name: str = Field(default='default', alias='HF_INSTRUCT_DATASET_NAME')
     instruct_dataset_split: str = Field(default='train', alias='HF_INSTRUCT_DATASET_SPLIT')
     instruct_dataset_target_path: str = Field(alias='HF_INSTRUCT_DATASET_TARGET_PATH')

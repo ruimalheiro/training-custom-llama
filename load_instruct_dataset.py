@@ -22,7 +22,10 @@ dataset = load_dataset(
 tokenizer = Tokenizer('./tokenizer.model')
 
 def tokenize(doc):
-    assert doc['conversation'][0]['role'] == 'user'
+    # Many datasets follow the same content (messages / role) structure. The only difference is the root key property.
+    selector_key = config.instruct_dataset_selector_key
+
+    assert doc[selector_key][0]['role'] == 'user'
 
     bot = tokenizer.special_tokens['<|begin_of_text|>']
     sh = tokenizer.special_tokens['<|start_header_id|>']
@@ -44,7 +47,7 @@ def tokenize(doc):
     push(tokenizer.encode('\n' + 'You are a helpful AI assistant'), False)
     push([eot], False)
 
-    for interaction in doc['conversation']:
+    for interaction in doc[selector_key]:
         role = interaction['role']
         content = interaction['content']
 
