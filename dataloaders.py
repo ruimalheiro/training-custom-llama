@@ -51,6 +51,19 @@ class PretrainDataLoader:
         self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position =  self.B * self.S * self.process_rank
 
+    def state_dict(self):
+        return {
+            'shards'          : list(self.shards),
+            'current_shard'   : self.current_shard,
+            'current_position': self.current_position,
+        }
+
+    def load_state_dict(self, state):
+        self.shards         = state['shards']
+        self.current_shard  = state['current_shard']
+        self.tokens         = load_tokens(self.shards[self.current_shard])
+        self.current_position = state['current_position']
+
     def next_batch(self):
         B, S = self.B, self.S
         buf = self.tokens[self.current_position : self.current_position+B*S+1]
@@ -131,6 +144,15 @@ class InstructDataLoader:
 
     def calculate_max_tokens(self):
         raise NotImplementedError('Not applicable for dialogue loader')
+
+    def state_dict(self):
+        return {'epoch': getattr(self.sampler, 'epoch', 0)}
+
+    def load_state_dict(self, state):
+        epoch = state['epoch']
+        self.sampler.set_epoch(epoch)
+        self.sampler.epoch = epoch
+        self._iterator = iter(self._dataloader)
 
 def init_data_loaders(
     batch_size,

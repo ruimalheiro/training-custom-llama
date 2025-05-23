@@ -12,16 +12,32 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 def print_model_config(config):
     print(json.dumps(config, indent=4))
 
-def load_model(checkpoint_dir, checkpoint, model, optimizer=None, reset_optimizer=False, force_start_step=None, wait_time=5, is_master_process=True):
+def load_model(
+    checkpoint_dir,
+    checkpoint,
+    model,
+    optimizer=None,
+    reset_optimizer=False,
+    force_start_step=None,
+    wait_time=5,
+    is_master_process=True
+):
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint)
-    state = torch.load(checkpoint_path)
+    state = torch.load(checkpoint_path, map_location='cpu')
+
     step = state['step'] + 1
     loss = state['val_loss']
+
     model.load_state_dict(state['model'])
+
     if optimizer is not None and not reset_optimizer:
         optimizer.load_state_dict(state['optimizer'])
+
     if force_start_step is not None:
         step = force_start_step
+
+    train_dl_state = state.get('train_dl', None)
+    val_dl_state   = state.get('val_dl',   None)
 
     if is_master_process:
         print('\nModel loading')
@@ -29,6 +45,20 @@ def load_model(checkpoint_dir, checkpoint, model, optimizer=None, reset_optimize
         print(f'model loaded from checkpoint: "{checkpoint}"')
         if not reset_optimizer:
             print(f'optimizer loaded')
+
+        if train_dl_state is not None and val_dl_state is not None:
+            print('Dataloaders state loaded')
+            print('--Train Loader state:')
+            print({
+                'current_shard': train_dl_state['current_shard'],
+                'current_position': train_dl_state['current_position']
+            })
+
+            print('--Val Loader state:')
+            print({
+                'current_shard': val_dl_state['current_shard'],
+                'current_position': val_dl_state['current_position']
+            })
 
         try:
             print('\nModel config')
@@ -50,17 +80,29 @@ def load_model(checkpoint_dir, checkpoint, model, optimizer=None, reset_optimize
         torch.cuda.empty_cache()
         time.sleep(wait_time)
     
-    return model, optimizer, step, loss
+    return model, optimizer, step, loss, train_dl_state, val_dl_state
 
-def save_model(checkpoint_dir, model, config, step, val_loss_accum, optimizer):
+def save_model(
+    checkpoint_dir,
+    model,
+    config,
+    step,
+    val_loss_accum,
+    optimizer,
+    train_loader,
+    val_loader
+):
     checkpoint_path = os.path.join(checkpoint_dir, f'model_{step}.pt')
     os.makedirs(checkpoint_dir, exist_ok=True)
+
     checkpoint = {
         'model': model.state_dict(),
         'step': step,
         'config': config.to_dict(),
         'optimizer': optimizer.state_dict(),
-        'val_loss': val_loss_accum
+        'val_loss': val_loss_accum,
+        'train_dl': train_loader.state_dict(),
+        'val_dl': val_loader.state_dict()
     }
     torch.save(checkpoint, checkpoint_path)
     print(f'Saved model: {checkpoint_path}')

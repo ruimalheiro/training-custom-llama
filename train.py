@@ -212,10 +212,21 @@ if is_model_distillation:
 
 optimizer = raw_model.configure_optimizers(weight_decay=weight_decay, learning_rate=max_lr, device=device, is_master_process=is_master_process)
 
+def get_lr(it):
+    # cosine lr scheduler
+    if it < warmup_steps:
+        return max_lr * (it + 1) / warmup_steps
+    if it > max_steps:
+        return min_lr
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <=1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
 start_step = 0
 best_val_loss = float('inf')
 if checkpoint is not None:
-    model, optimizer, start_step, best_loss = load_model(
+    model, optimizer, start_step, best_loss, train_loader_state, val_loader_state = load_model(
         load_checkpoints_path,
         checkpoint,
         raw_model,
@@ -228,6 +239,16 @@ if checkpoint is not None:
     if best_loss < best_val_loss and not args.reset_optimizer:
         best_val_loss = best_loss
 
+    if train_loader_state is not None and val_loader_state is not None:
+        train_loader.load_state_dict(train_loader_state)
+        val_loader.load_state_dict(val_loader_state)
+
+    if is_master_process:
+        current_lr = optimizer.param_groups[0]['lr']
+        scheduled_lr = get_lr(start_step)
+        print(f'LR stored in checkpoint: {current_lr:.4e}')
+        print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
+
 wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
 wnb.init(wnb_project_name, config={
     'batch_size': model_config.max_batch_size,
@@ -235,17 +256,6 @@ wnb.init(wnb_project_name, config={
     'min_learning_rate': min_lr,
     'max_learning_rate': max_lr,
 })
-
-def get_lr(it):
-    # cosine lr scheduler
-    if it < warmup_steps:
-        return max_lr * (it + 1) / warmup_steps
-    if it > max_steps:
-        return min_lr
-    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
-    assert 0 <= decay_ratio <=1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return min_lr + coeff * (max_lr - min_lr)
 
 def distillation_loss(teacher_logits, student_logits, temperature=1.0):
     teacher_probabilities = F.softmax(teacher_logits.view(-1, teacher_logits.size(-1)) / temperature, dim=-1)
@@ -278,7 +288,6 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
     if step > 0 and step % validate_every_x_steps == 0 or last_step:
         model.eval()
-        val_loader.reset()
 
         val_loss_sum = torch.tensor(0.0, device=device)
         val_tok_sum = torch.tensor(0.0, device=device)
@@ -308,7 +317,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
                 epochs_no_improve = 0
 
                 if save_checkpoints is True:
-                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer)
+                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader)
             else:
                 if step > early_stopping_patience_skip_steps:
                     epochs_no_improve += 1
@@ -396,14 +405,14 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
             loss_scaled += loss_distil / grad_accum_steps
 
-        loss_scaled.backward()
-
         n_valid = (y != -100).sum().item()
         train_loss_local_sum += loss.item() * n_valid
         train_tok_local_sum  += n_valid
 
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
+
+        loss_scaled.backward()
 
     train_loss_sum = train_loss_local_sum
     train_tok_sum = train_tok_local_sum
