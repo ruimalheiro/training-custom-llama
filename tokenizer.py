@@ -43,7 +43,7 @@ class Tokenizer:
             special_tokens=self.special_tokens
         )
 
-        self.number_of_words = self.model.n_vocab
+        self.vocab_size = self.model.n_vocab
 
         self.bos_id = self.special_tokens['<|begin_of_text|>']
         self.eos_id = self.special_tokens['<|end_of_text|>']

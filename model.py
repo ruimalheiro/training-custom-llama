@@ -426,7 +426,6 @@ class ModelConfig:
     n_layers: int
     n_heads: int
     n_kv_heads: int
-    vocab_size: int
     multiple_of: int
     ffn_dim_multiplier: float
     norm_eps: float
@@ -434,6 +433,7 @@ class ModelConfig:
     max_batch_size: int
     max_seq_len: int
     tokenizer: object = None
+    vocab_size: int = None
     pad_token_id: int = None
     stop_tokens: object = None
 

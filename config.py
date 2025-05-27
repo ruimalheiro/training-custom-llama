@@ -69,7 +69,6 @@ class TrainConfig(BaseSettings):
     n_layers: int = Field(default=16, alias='N_LAYERS')
     n_heads: int = Field(default=16, alias='N_HEADS')
     n_kv_heads: int = Field(default=8, alias='N_KV_HEADS')
-    vocab_size: int = Field(default=128256, alias='VOCAB_SIZE')
     multiple_of: int = Field(default=1024, alias='MULTIPLE_OF')
     ffn_dim_multiplier: float = Field(default=1.0, alias='FFN_DIM_MULTIPLIER')
     norm_eps: float = Field(default=1e-05, alias='NORM_EPS')

@@ -79,7 +79,6 @@ model_config = ModelConfig(
     n_layers=config.n_layers,
     n_heads=config.n_heads,
     n_kv_heads=config.n_kv_heads,
-    vocab_size=config.vocab_size,
     multiple_of=config.multiple_of,
     ffn_dim_multiplier=config.ffn_dim_multiplier,
     norm_eps=config.norm_eps,
@@ -104,6 +103,7 @@ ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device
 tokenizer = Tokenizer(tokenizer_checkpoint_path)
 
 model_config.tokenizer = tokenizer
+model_config.vocab_size = tokenizer.vocab_size
 model_config.pad_token_id = tokenizer.pad_id
 model_config.stop_tokens = tokenizer.stop_tokens
 
