@@ -2,10 +2,12 @@ import os
 import numpy as np
 
 from datasets import load_dataset
-from tokenizer import Tokenizer
+from tokenizer import init_tokenizer
 from data_preparation_utils import prepare_dataset
 from config import config
 
+
+tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
 NUMBER_OF_PROCESSES = max(1, os.cpu_count() // 2)
 if config.number_of_cpu_processes != 0:
@@ -20,11 +22,8 @@ dataset = load_dataset(
     num_proc=NUMBER_OF_PROCESSES
 )
 
-tokenizer = Tokenizer('./tokenizer.model')
-
 def tokenize(doc):
-    eot = tokenizer.special_tokens['<|end_of_text|>']
-    tokens = [eot]
+    tokens = [tokenizer.eos_id]
     tokens.extend(tokenizer.encode(doc['text']))
     tokens_np = np.array(tokens)
     return tokens_np

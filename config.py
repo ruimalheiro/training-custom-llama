@@ -36,6 +36,7 @@ class TrainConfig(BaseSettings):
 
     # tokenizer model path
     tokenizer_checkpoint_path: str = Field(alias='TOKENIZER_CHECKPOINT_PATH')
+    huggingface_tokenizer: bool = Field(default=False, alias='HUGGINGFACE_TOKENIZER')
 
     # train config
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')

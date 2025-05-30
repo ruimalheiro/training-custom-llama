@@ -2,9 +2,11 @@ import os
 import numpy as np
 
 from datasets import load_dataset
-from tokenizer import Tokenizer
+from tokenizer import init_tokenizer
 from config import config
 
+
+tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
 NUMBER_OF_PROCESSES = max(1, os.cpu_count() // 2)
 if config.number_of_cpu_processes != 0:
@@ -19,18 +21,16 @@ dataset = load_dataset(
     num_proc=NUMBER_OF_PROCESSES
 )
 
-tokenizer = Tokenizer('./tokenizer.model')
-
 def tokenize(doc):
     # Many datasets follow the same content (messages / role) structure. The only difference is the root key property.
     selector_key = config.instruct_dataset_selector_key
 
     assert doc[selector_key][0]['role'] == 'user'
 
-    bot = tokenizer.special_tokens['<|begin_of_text|>']
-    sh = tokenizer.special_tokens['<|start_header_id|>']
-    eh = tokenizer.special_tokens['<|end_header_id|>']
-    eot = tokenizer.special_tokens['<|eot_id|>']
+    bot = tokenizer.bos_id
+    sh = tokenizer.sh_id
+    eh = tokenizer.eh_id
+    eot = tokenizer.eot_id
 
     tokens, labels = [], []
     def push(tok_ids, is_assistant):

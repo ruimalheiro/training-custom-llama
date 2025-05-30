@@ -6,7 +6,7 @@ import time
 import math
 
 from torch.distributed import broadcast, barrier, destroy_process_group
-from tokenizer import Tokenizer
+from tokenizer import init_tokenizer
 from model import Transformer, ModelConfig
 from model_utils import print_model_config, save_model, load_model, init_multi_gpu, prepare_model_for_ddp, WnbWrapper
 from dataloaders import init_data_loaders
@@ -100,7 +100,7 @@ args = parser.parse_args()
 
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
 
-tokenizer = Tokenizer(tokenizer_checkpoint_path)
+tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
 model_config.tokenizer = tokenizer
 model_config.vocab_size = tokenizer.vocab_size

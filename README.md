@@ -1,26 +1,26 @@
-# Training custom Llama 3 in a node with multi gpu
+# Training custom Llama in a node with multi gpu
 
-This is a small project for educational purposes that combines many learnings and implements a simplified version of the Llama 3 architecture in PyTorch. It also includes scripts for multi-GPU training with Torch DDP.
+This is a small project for educational purposes that implements an LLM in PyTorch. It also includes scripts for data preparation and multi-GPU training with Torch DDP.
 
 Main concepts covered in this project:
 - Running distributed training jobs using PyTorch DDP.
-- Implementing a version of Llama3 and configuring the tokenizer.
+- Implementing a Llama based model and configuring the tokenizer.
 
 **NOTE**: 
 - The project can be adapted for other datasets.
-- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project.
+- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project. The default tokenizer is included but a huggingface tokenizer can also be loaded (check the env.example).
 
 
 ### Model
-The official project from Meta can be found [here](https://github.com/meta-llama/llama3).
+The model implementation is based on the Llama 3 architecture - official project from Meta can be found [here](https://github.com/meta-llama/llama3).
 
-The implementation in this project is a bit different but the core ideas are the same. To verify it is correctly implemented, the original pretrained weights can be loaded.
+The implementation in this project is a bit different but the core ideas are the same. To verify it is correctly implemented, the original pretrained weights can be loaded as a smoke test.
 
 
 ### Supported features in the trainer and config options
 - Single / multi GPU (1 node)
 - Pretraining
-- Instruct fine-tuning
+- Instruct fine-tuning (SFT)
 - Model distillation
   - Note that for the moment the teacher model is loaded as a checkpoint from HF. (You can however adapt it to run any model) 
 - Saving / loading checkpoint
