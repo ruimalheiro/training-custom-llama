@@ -133,7 +133,7 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 if max_steps == -1:
     if not is_instruct_training:
         total_tokens = train_loader.calculate_max_tokens()
-        max_steps = total_tokens // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
+        max_steps = total_tokens // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
     else:
         number_examples = train_loader.num_examples()
         number_of_processed_examples_per_step = model_config.max_batch_size * ddp_world_size * grad_accum_steps
