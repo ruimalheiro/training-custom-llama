@@ -129,11 +129,13 @@ assert total_batch_size % (model_config.max_batch_size * model_config.max_seq_le
 
 grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
 
+assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
+
 # max_steps not set
 if max_steps == -1:
     if not is_instruct_training:
         total_tokens = train_loader.calculate_max_tokens()
-        max_steps = total_tokens // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
+        max_steps = total_tokens // total_batch_size
     else:
         number_examples = train_loader.num_examples()
         number_of_processed_examples_per_step = model_config.max_batch_size * ddp_world_size * grad_accum_steps
@@ -153,7 +155,10 @@ elif args.instruct_checkpoint:
     checkpoint = args.instruct_checkpoint
 
 if is_master_process:
-    print('\nGeneral training configuration:')
+    if is_instruct_training:
+        print('\nSFT configuration:')
+    else:
+        print('\nPretrain configuration:')
     print('----------------------------------------')
     print(f'dataloader data path: "{dataloader_root_path}"')
     print(f'hellaswag data path: "{hellaswag_path}"')
@@ -175,6 +180,22 @@ if is_master_process:
     print(f'warmup steps: {warmup_steps}')
     print(f'weight decay: {weight_decay}')
     print(f'max steps: {max_steps}')
+
+    if not is_instruct_training:
+        model_params = model.get_parameters_count()
+        total_tokens = train_loader.calculate_max_tokens()
+        complete_max_steps = total_tokens // total_batch_size
+        chinchilla_tokens_for_model = model_params * 20
+        steps_needed = int((chinchilla_tokens_for_model * complete_max_steps) / total_tokens)
+        print(f'number of tokens in the dataset: {total_tokens}')
+        print(f'max steps needed to cover all tokens in the dataset: {int(complete_max_steps)}')
+        print(f'current "max steps" corresponds to {round((max_steps / complete_max_steps) * 100,2)}% of total tokens')
+        print(f'model parameter count: {model_params}')
+        print(f'tokens needed (according to chinchilla [model parameter count * 20]): {chinchilla_tokens_for_model}')
+        print(f'dataset meets criteria? {"YES" if total_tokens >= chinchilla_tokens_for_model else "NO"}')
+        print(f'number of steps needed to meet chinchilla criteria: {steps_needed}')
+        print(f'configured "max steps" meet criteria? {"YES" if max_steps >= steps_needed else "NO"}')
+
     print(f'early stopping patience: {early_stopping_patience}')
     if is_instruct_training:
         print(f'using instruct format: {is_instruct_training}')

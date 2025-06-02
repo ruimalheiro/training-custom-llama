@@ -412,6 +412,9 @@ class Transformer(nn.Module):
             print('-------------------------------------------')
         return outputs
 
+    def get_parameters_count(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
     def print_model_params(self, return_text=False):
         NUMBER_OF_PARAMETERS_LABEL = round(sum(p.numel() for p in self.parameters())/1e6), 'M parameters'
         NUMBER_OF_PARAMETERS_LABEL = str(NUMBER_OF_PARAMETERS_LABEL[0]) + ' ' + NUMBER_OF_PARAMETERS_LABEL[1]
