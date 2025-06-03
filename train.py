@@ -356,7 +356,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         if ddp:
             broadcast(abort_if_no_improve, src=0)
 
-    if not is_instruct_training and step > 0 and step % hellaswag_every_x_steps == 0 or last_step:
+    if not is_instruct_training and step > 0 and step % hellaswag_every_x_steps == 0 or (not is_instruct_training and last_step):
         model.eval()
         num_correct_norm = 0
         num_total = 0
