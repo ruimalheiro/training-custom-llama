@@ -7,6 +7,7 @@ import datasets
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
+from config import config
 
 
 def load_tokens(filename):
@@ -143,7 +144,12 @@ class InstructDataLoader:
         return len(self._dataloader.dataset)
 
     def calculate_max_tokens(self):
-        raise NotImplementedError('Not applicable for dialogue loader')
+        return sum(self._dataloader.dataset.map(
+            lambda ex: {'len': len(ex['input_ids'])},
+            num_proc=config.number_of_cpu_processes,
+            remove_columns=[],
+            desc='Calculating number of tokens'
+        )['len'])
 
     def state_dict(self):
         return {'epoch': getattr(self.sampler, 'epoch', 0)}
