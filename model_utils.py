@@ -48,17 +48,13 @@ def load_model(
 
         if train_dl_state is not None and val_dl_state is not None:
             print('Dataloaders state loaded')
+            _valid_keys = ['current_shard', 'current_position', 'epoch']
+
             print('--Train Loader state:')
-            print({
-                'current_shard': train_dl_state['current_shard'],
-                'current_position': train_dl_state['current_position']
-            })
+            print({key: train_dl_state[key] for key in _valid_keys if key in train_dl_state})
 
             print('--Val Loader state:')
-            print({
-                'current_shard': val_dl_state['current_shard'],
-                'current_position': val_dl_state['current_position']
-            })
+            print({key: val_dl_state[key] for key in _valid_keys if key in val_dl_state})
 
         try:
             print('\nModel config')
