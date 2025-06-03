@@ -85,6 +85,8 @@ class InstructDataLoader:
         if is_master_process:
             print(f'found {len(dataset)} examples for {split}')
 
+        self.is_master_process = is_master_process
+
         assert isinstance(dataset, datasets.Dataset)
 
         self.sampler = DistributedSampler(
@@ -149,6 +151,10 @@ class InstructDataLoader:
         return {'epoch': getattr(self.sampler, 'epoch', 0)}
 
     def load_state_dict(self, state):
+        if 'epoch' not in state:
+            if self.is_master_process:
+                print('Warning - "epoch" not present, starting fresh dataloader (most likely transition from pretraining to SFT).')
+            return
         epoch = state['epoch']
         self.sampler.set_epoch(epoch)
         self.sampler.epoch = epoch
