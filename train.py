@@ -132,7 +132,7 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
 
 total_tokens = train_loader.calculate_max_tokens()
-model_params = model.get_parameters_count()
+model_params = raw_model.get_parameters_count()
 complete_max_steps = math.ceil(total_tokens / total_batch_size)
 
 # max_steps not set
