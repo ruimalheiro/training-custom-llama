@@ -240,7 +240,7 @@ class Transformer(nn.Module):
         else:
             return logits
 
-    def configure_optimizers(self, weight_decay, learning_rate, device, is_master_process=True):
+    def configure_adamw_optimizer(self, weight_decay, learning_rate, device, betas=(0.9, 0.999), eps=1e-8, is_master_process=True):
         param_dict = {pn: p for pn, p in self.named_parameters()}
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
 
@@ -266,7 +266,7 @@ class Transformer(nn.Module):
             print(f'using fused AdamW: {use_fused}')
             print(f'trainable parameters: {total_trainable_params}')
 
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=[0.9, 0.95], eps=1e-8, fused=use_fused)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=list(betas), eps=eps, fused=use_fused)
         return optimizer
 
     def sample_top_p(self, probs, p):

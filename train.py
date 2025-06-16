@@ -229,7 +229,14 @@ if is_model_distillation:
     teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
     print(f'Finished loading teacher model on gpu: {ddp_rank}...')
 
-optimizer = raw_model.configure_optimizers(weight_decay=weight_decay, learning_rate=max_lr, device=device, is_master_process=is_master_process)
+optimizer = raw_model.configure_adamw_optimizer(
+    weight_decay=weight_decay,
+    learning_rate=max_lr,
+    betas=(0.9, 0.95),
+    eps=1e-8,
+    device=device,
+    is_master_process=is_master_process
+)
 
 def get_lr(it):
     # cosine lr scheduler
