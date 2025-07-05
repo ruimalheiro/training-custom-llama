@@ -18,6 +18,7 @@ from hellaswag_utils import (
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM
 from config import config
+from lora import apply_lora
 
 ##################################################
 ### CONFIGURATION ###
@@ -60,6 +61,11 @@ is_model_distillation = config.is_model_distillation
 distillation_temperature = config.distillation_temperature
 # The teacher model is loader via huggingface API: AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, ...) so needs to ve a valid checkpoint.
 teacher_model_checkpoint = config.teacher_model_checkpoint
+lora_enabled = config.lora_enabled
+lora_rank = config.lora_rank
+lora_alpha = config.lora_alpha
+lora_dropout = config.lora_dropout
+lora_target_modules = config.lora_target_modules
 
 # validation
 validate_every_x_steps = config.validate_every_x_steps
@@ -228,6 +234,17 @@ if is_model_distillation:
     print(f'Loading teacher model on gpu: {ddp_rank}...')
     teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
     print(f'Finished loading teacher model on gpu: {ddp_rank}...')
+
+if lora_enabled:
+    apply_lora(
+        raw_model,
+        rank=lora_rank,
+        alpha=lora_alpha,
+        dropout=lora_dropout,
+        target_modules=lora_target_modules,
+        device=device,
+        is_master_process=is_master_process
+    )
 
 optimizer = raw_model.configure_adamw_optimizer(
     weight_decay=weight_decay,

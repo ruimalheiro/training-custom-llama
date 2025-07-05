@@ -240,18 +240,31 @@ class Transformer(nn.Module):
         else:
             return logits
 
-    def configure_adamw_optimizer(self, weight_decay, learning_rate, device, betas=(0.9, 0.999), eps=1e-8, is_master_process=True):
-        param_dict = {pn: p for pn, p in self.named_parameters()}
-        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+    def configure_adamw_optimizer(self, weight_decay, learning_rate, device, betas=(0.9, 0.999), eps=1e-8, lora_weight_decay=0.0, is_master_process=True):
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
 
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
-        ]
+        lora_params_set = set([n for n, p in param_dict.items() if n.endswith('.A') or n.endswith('.B')])
+        lora_params = [param_dict[n] for n in lora_params_set]
+
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2 and n not in lora_params_set]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2 and n not in lora_params_set]
+
+        # disable optimization for other params if lora is set:
+        if lora_params:
+            for p in decay_params + nodecay_params:
+                p.requires_grad_(False)
+
+            optim_groups = [
+                {'params': lora_params, 'weight_decay': lora_weight_decay}
+            ]
+        else:
+            optim_groups = [
+                {'params': decay_params, 'weight_decay': weight_decay},
+                {'params': nodecay_params, 'weight_decay': 0.0}
+            ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        num_lora_params = sum(p.numel() for p in lora_params)
 
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and 'cuda' in device
@@ -263,6 +276,8 @@ class Transformer(nn.Module):
             print('----------------------------------------')
             print(f'num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters')
             print(f'num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters')
+            if lora_params:
+                print(f'num lora parameter tensors: {len(lora_params)}, with {num_lora_params:,} parameters')
             print(f'using fused AdamW: {use_fused}')
             print(f'trainable parameters: {total_trainable_params}')
 

@@ -52,6 +52,11 @@ class TrainConfig(BaseSettings):
     distillation_temperature: float = Field(alias='DISTILLATION_TEMPERATURE')
     # The teacher model is loader via huggingface API: AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, ...) so needs to ve a valid checkpoint.
     teacher_model_checkpoint: str = Field(alias='TEACHER_MODEL_CHECKPOINT')
+    lora_enabled: bool = Field(default=False, alias='LORA_ENABLED')
+    lora_rank: int = Field(default=16, alias='LORA_RANK')
+    lora_alpha: int = Field(default=8, alias='LORA_ALPHA')
+    lora_dropout: float = Field(default=0.05, alias='LORA_DROPOUT')
+    lora_target_modules: list[str] = Field(alias='LORA_TARGET_MODULES')
 
     # validation
     validate_every_x_steps: int = Field(alias='VALIDATE_EVERY_X_STEPS')

@@ -30,6 +30,7 @@ The implementation in this project is a bit different but the core ideas are the
 - Start from step X / Reset optimizer
   - Note: At the moment these need to be passed as flags when running the script.
 - Hellaswag for extra validation
+- LoRA
 
 
 ## Instructions
