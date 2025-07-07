@@ -95,8 +95,26 @@ model_config = ModelConfig(
 
 ##################################################
 
-# Can be augmented with more useful options.
-parser = argparse.ArgumentParser(description='Training Script')
+def get_lr(it):
+    # cosine lr scheduler
+    if it < warmup_steps:
+        return max_lr * (it + 1) / warmup_steps
+    if it > max_steps:
+        return min_lr
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <=1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+def distillation_loss(teacher_logits, student_logits, temperature=1.0):
+    teacher_probabilities = F.softmax(teacher_logits.view(-1, teacher_logits.size(-1)) / temperature, dim=-1)
+    student_log_probabilities = F.log_softmax(student_logits / temperature, dim=-1)
+
+    kl_divergence = F.kl_div(student_log_probabilities, teacher_probabilities, reduction='batchmean') * (temperature ** 2)
+    return kl_divergence
+
+# Options
+parser = argparse.ArgumentParser(description='Script options')
 parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
 parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
 parser.add_argument('--reset-optimizer', action='store_true', help='Reset the optimizer state when loading a checkpoint.')
@@ -105,6 +123,14 @@ parser.add_argument('--start-step', type=int, default=None, help='Starting step 
 args = parser.parse_args()
 
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
+
+wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
+wnb.init(wnb_project_name, config={
+    'batch_size': model_config.max_batch_size,
+    'sequence_length': model_config.max_seq_len,
+    'min_learning_rate': min_lr,
+    'max_learning_rate': max_lr,
+})
 
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
@@ -235,6 +261,26 @@ if is_model_distillation:
     teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
     print(f'Finished loading teacher model on gpu: {ddp_rank}...')
 
+start_step = 0
+best_val_loss = float('inf')
+loaded_optimizer_state = None
+if checkpoint is not None:
+    model, loaded_optimizer_state, start_step, best_loss, train_loader_state, val_loader_state = load_model(
+        load_checkpoints_path,
+        checkpoint,
+        raw_model,
+        reset_optimizer=args.reset_optimizer,
+        force_start_step=args.start_step,
+        is_master_process=is_master_process
+    )
+
+    if best_loss < best_val_loss and not args.reset_optimizer:
+        best_val_loss = best_loss
+
+    if train_loader_state is not None and val_loader_state is not None:
+        train_loader.load_state_dict(train_loader_state)
+        val_loader.load_state_dict(val_loader_state)
+
 if lora_enabled:
     apply_lora(
         raw_model,
@@ -254,58 +300,17 @@ optimizer = raw_model.configure_adamw_optimizer(
     device=device,
     is_master_process=is_master_process
 )
-
-def get_lr(it):
-    # cosine lr scheduler
-    if it < warmup_steps:
-        return max_lr * (it + 1) / warmup_steps
-    if it > max_steps:
-        return min_lr
-    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
-    assert 0 <= decay_ratio <=1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return min_lr + coeff * (max_lr - min_lr)
-
-start_step = 0
-best_val_loss = float('inf')
-if checkpoint is not None:
-    model, optimizer, start_step, best_loss, train_loader_state, val_loader_state = load_model(
-        load_checkpoints_path,
-        checkpoint,
-        raw_model,
-        optimizer=optimizer,
-        reset_optimizer=args.reset_optimizer,
-        force_start_step=args.start_step,
-        is_master_process=is_master_process
-    )
-
-    if best_loss < best_val_loss and not args.reset_optimizer:
-        best_val_loss = best_loss
-
-    if train_loader_state is not None and val_loader_state is not None:
-        train_loader.load_state_dict(train_loader_state)
-        val_loader.load_state_dict(val_loader_state)
-
+if loaded_optimizer_state is not None:
+    assert type(loaded_optimizer_state) == dict
+    optimizer.load_state_dict(loaded_optimizer_state)
     if is_master_process:
-        current_lr = optimizer.param_groups[0]['lr']
-        scheduled_lr = get_lr(start_step)
-        print(f'LR stored in checkpoint: {current_lr:.4e}')
-        print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
+        print('optimizer state loaded and ready')
 
-wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
-wnb.init(wnb_project_name, config={
-    'batch_size': model_config.max_batch_size,
-    'sequence_length': model_config.max_seq_len,
-    'min_learning_rate': min_lr,
-    'max_learning_rate': max_lr,
-})
-
-def distillation_loss(teacher_logits, student_logits, temperature=1.0):
-    teacher_probabilities = F.softmax(teacher_logits.view(-1, teacher_logits.size(-1)) / temperature, dim=-1)
-    student_log_probabilities = F.log_softmax(student_logits / temperature, dim=-1)
-
-    kl_divergence = F.kl_div(student_log_probabilities, teacher_probabilities, reduction='batchmean') * (temperature ** 2)
-    return kl_divergence
+if is_master_process:
+    current_lr = optimizer.param_groups[0]['lr']
+    scheduled_lr = get_lr(start_step)
+    print(f'LR stored in checkpoint: {current_lr:.4e}')
+    print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
 
 if ddp:
     barrier()

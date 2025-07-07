@@ -52,7 +52,7 @@ def apply_lora(
                 lora_layer
             )
     if is_master_process:
-        print('LoRA applied with params:')
+        print('\nLoRA applied with params:')
         print(f'- rank: {rank}')
         print(f'- alpha: {alpha}')
         print(f'- dropout: {dropout}')

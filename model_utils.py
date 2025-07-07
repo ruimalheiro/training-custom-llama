@@ -16,7 +16,6 @@ def load_model(
     checkpoint_dir,
     checkpoint,
     model,
-    optimizer=None,
     reset_optimizer=False,
     force_start_step=None,
     wait_time=5,
@@ -30,8 +29,9 @@ def load_model(
 
     model.load_state_dict(state['model'])
 
-    if optimizer is not None and not reset_optimizer:
-        optimizer.load_state_dict(state['optimizer'])
+    optimizer_state = None
+    if not reset_optimizer:
+        optimizer_state = state['optimizer']
 
     if force_start_step is not None:
         step = force_start_step
@@ -43,8 +43,8 @@ def load_model(
         print('\nModel loading')
         print('----------------------------------------')
         print(f'model loaded from checkpoint: "{checkpoint}"')
-        if not reset_optimizer:
-            print(f'optimizer loaded')
+        if optimizer_state is not None:
+            print(f'optimizer state dict loaded from checkpoint')
 
         if train_dl_state is not None and val_dl_state is not None:
             print('Dataloaders state loaded')
@@ -76,7 +76,7 @@ def load_model(
         torch.cuda.empty_cache()
         time.sleep(wait_time)
     
-    return model, optimizer, step, loss, train_dl_state, val_dl_state
+    return model, optimizer_state, step, loss, train_dl_state, val_dl_state
 
 def save_model(
     checkpoint_dir,
