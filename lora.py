@@ -30,6 +30,9 @@ class CustomLoRA(nn.Module):
         lora_weights = self.weight + self.scale * (self.B @ self.A)
         return F.linear(self.dropout(x), lora_weights, self.bias)
 
+def model_has_lora(model):
+    return any(isinstance(m, CustomLoRA) for m in model.modules())
+
 def apply_lora(
     model,
     device,
@@ -39,6 +42,16 @@ def apply_lora(
     dropout=0.0,
     is_master_process=True
 ):
+    if model_has_lora(model):
+        if is_master_process:
+            print('\nLoRA Configuration')
+            print('----------------------------------------')
+            print('LoRA is already applied with params:')
+            print(f'- rank: {rank}')
+            print(f'- alpha: {alpha}')
+            print(f'- dropout: {dropout}')
+        return
+
     for name, module in model.named_modules():
         if any(name.endswith(t) for t in target_modules):
             parent_name, child_name = name.rsplit('.', 1)
@@ -52,7 +65,9 @@ def apply_lora(
                 lora_layer
             )
     if is_master_process:
-        print('\nLoRA applied with params:')
+        print('\nLoRA Configuration')
+        print('----------------------------------------')
+        print('LoRA applied with params:')
         print(f'- rank: {rank}')
         print(f'- alpha: {alpha}')
         print(f'- dropout: {dropout}')

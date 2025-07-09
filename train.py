@@ -20,8 +20,8 @@ from transformers import AutoModelForCausalLM
 from config import config
 from lora import apply_lora
 
-##################################################
-### CONFIGURATION ###
+
+########## CONFIGURATION ##########
 
 # datasets path / save checkpoints path
 if config.is_instruct_training:
@@ -79,6 +79,8 @@ max_test_gen_len = config.max_test_gen_len
 test_pretrain_generation_prompts = config.test_pretrain_generation_prompts
 test_instruct_generation_prompts = config.test_instruct_generation_prompts
 
+# Init the tokenizer
+tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
 model_config = ModelConfig(
     dim=config.dim,
@@ -90,10 +92,16 @@ model_config = ModelConfig(
     norm_eps=config.norm_eps,
     rope_theta=config.rope_theta,
     max_batch_size=config.max_batch_size,
-    max_seq_len=config.max_seq_len
+    max_seq_len=config.max_seq_len,
+    # tokenizer aux config
+    tokenizer = tokenizer,
+    vocab_size = tokenizer.vocab_size,
+    pad_token_id = tokenizer.pad_id,
+    stop_tokens = tokenizer.stop_tokens
 )
 
-##################################################
+########## AUX FUNCTIONS ##########
+# TODO be moved to another file.
 
 def get_lr(it):
     # cosine lr scheduler
@@ -113,7 +121,8 @@ def distillation_loss(teacher_logits, student_logits, temperature=1.0):
     kl_divergence = F.kl_div(student_log_probabilities, teacher_probabilities, reduction='batchmean') * (temperature ** 2)
     return kl_divergence
 
-# Options
+
+########## TERMINAL OPTIONS ##########
 parser = argparse.ArgumentParser(description='Script options')
 parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
 parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
@@ -122,8 +131,10 @@ parser.add_argument('--start-step', type=int, default=None, help='Starting step 
 
 args = parser.parse_args()
 
+########## INIT DISTRIBUTED DATA PARALLEL (DDP) ##########
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
 
+########## INIT WnB ##########
 wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
 wnb.init(wnb_project_name, config={
     'batch_size': model_config.max_batch_size,
@@ -132,20 +143,46 @@ wnb.init(wnb_project_name, config={
     'max_learning_rate': max_lr,
 })
 
-tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
+########## LOAD CHECKPOINT ##########
+load_checkpoints_path = None
+checkpoint = None
+if args.pretrain_checkpoint:
+    load_checkpoints_path = pretrain_checkpoints_path
+    checkpoint = args.pretrain_checkpoint
+elif args.instruct_checkpoint:
+    load_checkpoints_path = instruct_checkpoints_path
+    checkpoint = args.instruct_checkpoint
 
-model_config.tokenizer = tokenizer
-model_config.vocab_size = tokenizer.vocab_size
-model_config.pad_token_id = tokenizer.pad_id
-model_config.stop_tokens = tokenizer.stop_tokens
+# defaults
+loaded_model_state = None
+loaded_optimizer_state = None
+start_step = 0
+best_val_loss = float('inf')
+loaded_train_loader_state = None
+loaded_val_loader_state = None
+is_lora_checkpoint = False
 
-model = Transformer(model_config)
-model.to(device)
+if checkpoint is not None:
+    (
+        loaded_model_state,
+        loaded_optimizer_state,
+        start_step,
+        best_loss,
+        loaded_train_loader_state,
+        loaded_val_loader_state,
+        is_lora_checkpoint
+    ) = load_model(
+        load_checkpoints_path,
+        checkpoint,
+        reset_optimizer=args.reset_optimizer,
+        force_start_step=args.start_step,
+        is_master_process=is_master_process
+    )
 
-torch.set_float32_matmul_precision('high')
+    if best_loss < best_val_loss and not args.reset_optimizer:
+        best_val_loss = best_loss
 
-model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
-
+########## PREPARE DATA LOADERS ##########
 train_loader, val_loader = init_data_loaders(
     batch_size=model_config.max_batch_size,
     sequence_length=model_config.max_seq_len,
@@ -156,6 +193,47 @@ train_loader, val_loader = init_data_loaders(
     is_instruct_training=is_instruct_training,
     pad_id=model_config.pad_token_id
 )
+
+if loaded_train_loader_state is not None and loaded_val_loader_state is not None:
+    train_loader.load_state_dict(loaded_train_loader_state)
+    val_loader.load_state_dict(loaded_val_loader_state)
+
+########## INIT MODEL AND SETUP ##########
+model = Transformer(model_config)
+
+if checkpoint and loaded_model_state:
+    if is_lora_checkpoint:
+        apply_lora(
+            model,
+            rank=lora_rank,
+            alpha=lora_alpha,
+            dropout=lora_dropout,
+            target_modules=lora_target_modules,
+            device=device,
+            is_master_process=is_master_process
+        )
+    model.load_state_dict(loaded_model_state)
+    if is_master_process:
+        print('\nModel loading')
+        print('----------------------------------------')
+        print('Model checkpoint loaded and ready')
+
+if lora_enabled:
+    apply_lora(
+        model,
+        rank=lora_rank,
+        alpha=lora_alpha,
+        dropout=lora_dropout,
+        target_modules=lora_target_modules,
+        device=device,
+        is_master_process=is_master_process
+    )
+
+model.to(device)
+
+torch.set_float32_matmul_precision('high')
+
+model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
 
 assert total_batch_size % (model_config.max_batch_size * model_config.max_seq_len) == 0
 
@@ -175,15 +253,44 @@ test_generation_prompts = test_pretrain_generation_prompts
 if is_instruct_training:
     test_generation_prompts = test_instruct_generation_prompts
 
-load_checkpoints_path = None
-checkpoint = None
-if args.pretrain_checkpoint:
-    load_checkpoints_path = pretrain_checkpoints_path
-    checkpoint = args.pretrain_checkpoint
-elif args.instruct_checkpoint:
-    load_checkpoints_path = instruct_checkpoints_path
-    checkpoint = args.instruct_checkpoint
+# Model distillation setup
+teacher_model = None
+if is_model_distillation:
+    print(f'Loading teacher model on gpu: {ddp_rank}...')
+    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
+    print(f'Finished loading teacher model on gpu: {ddp_rank}...')
 
+# Init the optimizer
+optimizer = raw_model.configure_adamw_optimizer(
+    weight_decay=weight_decay,
+    learning_rate=max_lr,
+    betas=(0.9, 0.95),
+    eps=1e-8,
+    device=device,
+    is_master_process=is_master_process
+)
+if loaded_optimizer_state is not None:
+    assert type(loaded_optimizer_state) == dict
+    optimizer.load_state_dict(loaded_optimizer_state)
+
+    # This is to ensure the optimiser state respect the device for all params
+    for group in optimizer.param_groups:
+        for p in group['params']:
+            state = optimizer.state[p]
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(device=p.device, dtype=p.dtype)
+
+    if is_master_process:
+        print('optimizer state loaded and ready')
+
+if is_master_process:
+    current_lr = optimizer.param_groups[0]['lr']
+    scheduled_lr = get_lr(start_step)
+    print(f'LR stored in checkpoint: {current_lr:.4e}')
+    print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
+
+########## CONFIG SUMMARY ##########
 if is_master_process:
     if is_instruct_training:
         print('\nSFT configuration:')
@@ -255,63 +362,7 @@ if is_master_process:
         print('----------------------------------------')
         print_model_config(model_config.to_dict())
 
-teacher_model = None
-if is_model_distillation:
-    print(f'Loading teacher model on gpu: {ddp_rank}...')
-    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
-    print(f'Finished loading teacher model on gpu: {ddp_rank}...')
-
-start_step = 0
-best_val_loss = float('inf')
-loaded_optimizer_state = None
-if checkpoint is not None:
-    model, loaded_optimizer_state, start_step, best_loss, train_loader_state, val_loader_state = load_model(
-        load_checkpoints_path,
-        checkpoint,
-        raw_model,
-        reset_optimizer=args.reset_optimizer,
-        force_start_step=args.start_step,
-        is_master_process=is_master_process
-    )
-
-    if best_loss < best_val_loss and not args.reset_optimizer:
-        best_val_loss = best_loss
-
-    if train_loader_state is not None and val_loader_state is not None:
-        train_loader.load_state_dict(train_loader_state)
-        val_loader.load_state_dict(val_loader_state)
-
-if lora_enabled:
-    apply_lora(
-        raw_model,
-        rank=lora_rank,
-        alpha=lora_alpha,
-        dropout=lora_dropout,
-        target_modules=lora_target_modules,
-        device=device,
-        is_master_process=is_master_process
-    )
-
-optimizer = raw_model.configure_adamw_optimizer(
-    weight_decay=weight_decay,
-    learning_rate=max_lr,
-    betas=(0.9, 0.95),
-    eps=1e-8,
-    device=device,
-    is_master_process=is_master_process
-)
-if loaded_optimizer_state is not None:
-    assert type(loaded_optimizer_state) == dict
-    optimizer.load_state_dict(loaded_optimizer_state)
-    if is_master_process:
-        print('optimizer state loaded and ready')
-
-if is_master_process:
-    current_lr = optimizer.param_groups[0]['lr']
-    scheduled_lr = get_lr(start_step)
-    print(f'LR stored in checkpoint: {current_lr:.4e}')
-    print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
-
+########## TRAINING ##########
 if ddp:
     barrier()
 print(f'\nGPU: {ddp_rank} is ready.')
@@ -365,7 +416,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
                 epochs_no_improve = 0
 
                 if save_checkpoints is True:
-                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader)
+                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader, lora_enabled)
             else:
                 if step > early_stopping_patience_skip_steps:
                     epochs_no_improve += 1

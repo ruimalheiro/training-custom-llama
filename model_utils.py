@@ -7,6 +7,7 @@ import wandb
 from datetime import datetime
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
+from collections import OrderedDict
 
 
 def print_model_config(config):
@@ -15,7 +16,6 @@ def print_model_config(config):
 def load_model(
     checkpoint_dir,
     checkpoint,
-    model,
     reset_optimizer=False,
     force_start_step=None,
     wait_time=5,
@@ -27,24 +27,27 @@ def load_model(
     step = state['step'] + 1
     loss = state['val_loss']
 
-    model.load_state_dict(state['model'])
+    model_state = state['model']
+    assert type(model_state) == OrderedDict
 
     optimizer_state = None
     if not reset_optimizer:
         optimizer_state = state['optimizer']
+        assert type(optimizer_state) == dict
 
     if force_start_step is not None:
         step = force_start_step
 
     train_dl_state = state.get('train_dl', None)
-    val_dl_state   = state.get('val_dl',   None)
+    val_dl_state = state.get('val_dl',   None)
+    lora_is_set = state.get('lora_enabled', False)
 
     if is_master_process:
-        print('\nModel loading')
+        print('\nModel checkpoint loading')
         print('----------------------------------------')
-        print(f'model loaded from checkpoint: "{checkpoint}"')
+        print(f'model state loaded from checkpoint: "{checkpoint}"')
         if optimizer_state is not None:
-            print(f'optimizer state dict loaded from checkpoint')
+            print(f'optimizer state loaded from checkpoint')
 
         if train_dl_state is not None and val_dl_state is not None:
             print('Dataloaders state loaded')
@@ -67,6 +70,8 @@ def load_model(
         else:
             print(f'\nStarting from step: 0')
         print(f'Last calculated loss: {loss}')
+        if lora_is_set is True:
+            print('\nLoRA is present in this checkpoint')
     
     # Delete large state file to free memory
     del state
@@ -76,7 +81,7 @@ def load_model(
         torch.cuda.empty_cache()
         time.sleep(wait_time)
     
-    return model, optimizer_state, step, loss, train_dl_state, val_dl_state
+    return model_state, optimizer_state, step, loss, train_dl_state, val_dl_state, lora_is_set
 
 def save_model(
     checkpoint_dir,
@@ -86,7 +91,8 @@ def save_model(
     val_loss_accum,
     optimizer,
     train_loader,
-    val_loader
+    val_loader,
+    lora_enabled
 ):
     checkpoint_path = os.path.join(checkpoint_dir, f'model_{step}.pt')
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -98,7 +104,8 @@ def save_model(
         'optimizer': optimizer.state_dict(),
         'val_loss': val_loss_accum,
         'train_dl': train_loader.state_dict(),
-        'val_dl': val_loader.state_dict()
+        'val_dl': val_loader.state_dict(),
+        'lora_enabled': lora_enabled
     }
     torch.save(checkpoint, checkpoint_path)
     print(f'Saved model: {checkpoint_path}')

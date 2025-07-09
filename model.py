@@ -209,7 +209,8 @@ class Transformer(nn.Module):
 
         hidden_state = self.tok_embeddings(input_ids)
 
-        self.freqs_cis = self.freqs_cis.to(hidden_state.device)
+        if self.freqs_cis.device != hidden_state.device:
+            self.freqs_cis = self.freqs_cis.to(hidden_state.device)
 
         freqs_cis = self.freqs_cis[start_position : start_position + sequence_length]
 
@@ -243,11 +244,11 @@ class Transformer(nn.Module):
     def configure_adamw_optimizer(self, weight_decay, learning_rate, device, betas=(0.9, 0.999), eps=1e-8, lora_weight_decay=0.0, is_master_process=True):
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
 
-        lora_params_set = set([n for n, p in param_dict.items() if n.endswith('.A') or n.endswith('.B')])
-        lora_params = [param_dict[n] for n in lora_params_set]
+        lora_names = [n for n in param_dict if n.endswith('.A') or n.endswith('.B')]
+        lora_params = [param_dict[n] for n in lora_names]
 
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2 and n not in lora_params_set]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2 and n not in lora_params_set]
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2 and n not in lora_names]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2 and n not in lora_names]
 
         # disable optimization for other params if lora is set:
         if lora_params:
