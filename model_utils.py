@@ -137,10 +137,14 @@ def init_multi_gpu(seed=None):
     ddp = int(os.environ.get('RANK', -1)) != -1
     if ddp:
         assert torch.cuda.is_available()
-        init_process_group(backend='nccl')
+
         ddp_rank = int(os.environ['RANK'])
         ddp_local_rank = int(os.environ['LOCAL_RANK'])
         ddp_world_size = int(os.environ['WORLD_SIZE'])
+
+        torch.cuda.set_device(ddp_local_rank)
+        init_process_group(backend='nccl')
+
         device = f'cuda:{ddp_local_rank}'
         is_master_process = ddp_rank == 0
     else:
@@ -159,7 +163,14 @@ def init_multi_gpu(seed=None):
     if is_master_process:
         print(f'\nDevice setup:')
         print('----------------------------------------')
-        print(f'Using device type: {device_type}\n')
+        print(f'Using device type: {device_type}')
+        if ddp_rank:
+            print(f'DDP rank: {ddp_rank}')
+        if ddp_local_rank:
+            print(f'DDP local rank: {ddp_local_rank}')
+        if ddp_world_size:
+            print(f'DDP world size: {ddp_world_size}')
+        print('\n')
 
     if seed is not None:
         torch.manual_seed(seed)

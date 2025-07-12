@@ -233,8 +233,6 @@ model.to(device)
 
 torch.set_float32_matmul_precision('high')
 
-model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
-
 assert total_batch_size % (model_config.max_batch_size * model_config.max_seq_len) == 0
 
 grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
@@ -242,7 +240,7 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
 
 total_tokens = train_loader.calculate_max_tokens()
-model_params = raw_model.get_parameters_count()
+model_params = model.get_parameters_count()
 complete_max_steps = math.ceil(total_tokens / total_batch_size)
 
 # max_steps not set
@@ -261,7 +259,7 @@ if is_model_distillation:
     print(f'Finished loading teacher model on gpu: {ddp_rank}...')
 
 # Init the optimizer
-optimizer = raw_model.configure_adamw_optimizer(
+optimizer = model.configure_adamw_optimizer(
     weight_decay=weight_decay,
     learning_rate=max_lr,
     betas=(0.9, 0.95),
@@ -283,6 +281,8 @@ if loaded_optimizer_state is not None:
 
     if is_master_process:
         print('optimizer state loaded and ready')
+
+model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
 
 if is_master_process:
     current_lr = optimizer.param_groups[0]['lr']
@@ -364,7 +364,7 @@ if is_master_process:
 
 ########## TRAINING ##########
 if ddp:
-    barrier()
+    barrier(device_ids=[ddp_local_rank])
 print(f'\nGPU: {ddp_rank} is ready.')
 
 tqdm_label = 'Training'
@@ -551,7 +551,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         wnb.log({'Train Loss': train_ce})
 
 if ddp:
-    barrier()
+    barrier(device_ids=[ddp_local_rank])
     destroy_process_group()
 
 wnb.finish()
