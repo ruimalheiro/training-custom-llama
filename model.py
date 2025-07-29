@@ -47,8 +47,8 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     xk_complex = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
 
     # Ensure freqs_cis has the correct dimensions compatible with broadcasting. E.g (a, 1, b, c, 1)
-    # Note that xq has shape (batch_size, sequence_length, n_heads, head_dim), meaning with the hyperparamers as they are
-    # it will be (6, 512, 32, 4096 / 32) -> (6, 512, 32, 128). xq_complex will be (6, 512, 32, 64, 2).
+    # NOTE that xq has shape (batch_size, sequence_length, n_heads, head_dim). Lets assume batch_size = 6, sequence_length = 512, n_heads = 32 and model_dim = 4096 then
+    # it will be (6, 512, 32, 4096 / 32) -> (6, 512, 32, 128). xq_complex will be (6, 512, 32, 64, 2). The reason 128 becomes 64, 2 is because each complex number has the real and the imaginary part.
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_complex.ndim, xq_complex.shape)
 
     # Now we can apply the rotary embeddings and flatten from dimension 3 (so we get the 128 back with 4 dimensions instead of 5.
