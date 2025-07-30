@@ -302,6 +302,7 @@ class Transformer(nn.Module):
 
     def temperature_and_top_p_sampling(self, logits, temperature, top_p):
         ''' Applies temperature and calculates top P. If temperature is 0 we just get the token with highest logit.
+            Penalty should be ~[1.05, 1.2]
         '''
         if temperature > 0:
             probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
@@ -310,7 +311,25 @@ class Transformer(nn.Module):
             next_token = torch.argmax(logits[:, -1], dim=-1)
         return next_token
 
-    def generate(self, prompt_tokens, max_gen_len, temperature, top_p, device):
+    def apply_repetition_penalty(self, previous_tokens, logits, penalty):
+        '''Applies the repetition penalty to reduce the probability of the same exact tokens appear multiple times even if they have strong logit.
+        '''
+        if penalty == 1.0:
+            return
+
+        # (for each batch index) look at all the token logits that already were generated and apply the penalty:
+        for batch_index in range(logits.size(0)):
+            tokens = previous_tokens[batch_index].unique()
+            positive_logits = logits[batch_index, tokens] > 0
+
+            # penalty: if logit is positive, we want to reduce it, if it is negative we want to make it more negative
+            logits[batch_index, tokens] = torch.where(
+                positive_logits,
+                logits[batch_index, tokens] / penalty,
+                logits[batch_index, tokens] * penalty
+            )
+
+    def generate(self, prompt_tokens, max_gen_len, temperature, top_p, repetition_penalty, device):
         batch_size = len(prompt_tokens)
 
         # Finding the boundaries / limits.
@@ -326,7 +345,6 @@ class Transformer(nn.Module):
             tokens[batch, : len(tokens_list)] = torch.tensor(tokens_list, dtype=torch.long, device=device)
 
         # Define stop conditions, input mask and the stop tokens (extracted from the tokenizer)
-        previous_position = 0
         eos_reached = torch.tensor([False] * batch_size, device=device)
         input_text_mask = tokens != pad_id
         stop_tokens = torch.tensor(list(self.config.stop_tokens), device=device)
@@ -334,6 +352,13 @@ class Transformer(nn.Module):
         with torch.no_grad():
             for current_position in range(min_prompt_len, total_len):
                 logits = self.forward(tokens[:, :current_position], start_position=0)
+
+                # Apply repetition penalty
+                self.apply_repetition_penalty(
+                    tokens[:, :current_position],
+                    logits[:, -1],
+                    penalty=repetition_penalty
+                )
                     
                 # Temperature and sampling.
                 next_token = self.temperature_and_top_p_sampling(logits, temperature, top_p)
@@ -348,7 +373,6 @@ class Transformer(nn.Module):
                 # # Checks if we reached the eos on all sequences in the batch and updates the current position.
                 eos_reached |= (~input_text_mask[:, current_position]) & (torch.isin(next_token, stop_tokens))
                 
-                previous_position = current_position
                 if all(eos_reached):
                     break
 
@@ -377,6 +401,7 @@ class Transformer(nn.Module):
         max_gen_len=256,
         temperature=0.6,
         top_p=0.9,
+        repetition_penalty=1.0,
         full_seq=False,
         device='cpu',
         is_instruct=False,
@@ -401,6 +426,7 @@ class Transformer(nn.Module):
             max_gen_len=max_gen_len,
             temperature=temperature,
             top_p=top_p,
+            repetition_penalty=repetition_penalty,
             device=device
         )
 
