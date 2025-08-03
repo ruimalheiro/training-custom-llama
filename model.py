@@ -6,6 +6,7 @@ import inspect
 
 from torch import nn
 from dataclasses import dataclass
+from collections import defaultdict
 
 
 def precompute_freqs_complex_exponential(dim, sequence_length, theta=10000.0):
@@ -311,15 +312,16 @@ class Transformer(nn.Module):
             next_token = torch.argmax(logits[:, -1], dim=-1)
         return next_token
 
-    def apply_repetition_penalty(self, previous_tokens, logits, penalty):
-        '''Applies the repetition penalty to reduce the probability of the same exact tokens appear multiple times even if they have strong logit.
+    def apply_repetition_penalty(self, current_tokens, logits, penalty):
+        ''' Applies the repetition penalty to reduce the probability of the same exact tokens appear multiple times even if they have strong logit.
+            Modification is in-place.
         '''
         if penalty == 1.0:
             return
 
         # (for each batch index) look at all the token logits that already were generated and apply the penalty:
         for batch_index in range(logits.size(0)):
-            tokens = previous_tokens[batch_index].unique()
+            tokens = current_tokens[batch_index].unique()
             positive_logits = logits[batch_index, tokens] > 0
 
             # penalty: if logit is positive, we want to reduce it, if it is negative we want to make it more negative
@@ -329,7 +331,31 @@ class Transformer(nn.Module):
                 logits[batch_index, tokens] * penalty
             )
 
-    def generate(self, prompt_tokens, max_gen_len, temperature, top_p, repetition_penalty, device):
+    def apply_no_repeat_ngram(self, current_tokens, logits, ngram_size):
+        ''' Applies the no_repeat_ngram strategy. Computes the ngrams of size ngram_size accross the token sequence and bans 
+        tokens "ngram_size" for the prefix "ngram_size - 1" (Tokens that would complete an ngram).
+            Modification is in-place.
+        '''
+        if ngram_size <= 1 or current_tokens.size(1) < ngram_size - 1:
+            return
+
+        for batch_index in range(logits.size(0)):
+            banned = defaultdict(set)
+            tokens = current_tokens[batch_index].tolist()
+
+            # generate the bans
+            for i in range(len(tokens) - ngram_size + 1):
+                slide_index = i + ngram_size - 1
+                prefix, banned_token = tuple(tokens[i: slide_index]), tokens[slide_index]
+
+                banned[prefix].add(banned_token)
+
+            # get last prefix
+            prefix = tuple(tokens[-(ngram_size - 1):])
+            for banned_token in banned.get(prefix, ()):
+                logits[batch_index, banned_token] = float('-inf')
+
+    def generate(self, prompt_tokens, max_gen_len, temperature, top_p, repetition_penalty, no_repeat_ngram_size, device):
         batch_size = len(prompt_tokens)
 
         # Finding the boundaries / limits.
@@ -358,6 +384,13 @@ class Transformer(nn.Module):
                     tokens[:, :current_position],
                     logits[:, -1],
                     penalty=repetition_penalty
+                )
+
+                # Apply no repeat ngram
+                self.apply_no_repeat_ngram(
+                    tokens[:, :current_position],
+                    logits[:, -1],
+                    ngram_size=no_repeat_ngram_size
                 )
                     
                 # Temperature and sampling.
@@ -402,6 +435,7 @@ class Transformer(nn.Module):
         temperature=0.6,
         top_p=0.9,
         repetition_penalty=1.0,
+        no_repeat_ngram_size=1,
         full_seq=False,
         device='cpu',
         is_instruct=False,
@@ -427,6 +461,7 @@ class Transformer(nn.Module):
             temperature=temperature,
             top_p=top_p,
             repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
             device=device
         )
 
