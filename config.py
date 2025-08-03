@@ -16,10 +16,17 @@ class TrainConfig(BaseSettings):
     instruct_dataset_target_path: str = Field(alias='HF_INSTRUCT_DATASET_TARGET_PATH')
     instruct_dataset_shard_prefix: str = Field(alias='HF_INSTRUCT_DATASET_SHARD_PREFIX')
 
+    dpo_dataset: str = Field(alias='HF_DPO_DATASET')
+    dpo_dataset_name: str = Field(default='default', alias='HF_DPO_DATASET_NAME')
+    dpo_dataset_split: str = Field(default='train', alias='HF_DPO_DATASET_SPLIT')
+    dpo_dataset_target_path: str = Field(alias='HF_DPO_DATASET_TARGET_PATH')
+    dpo_dataset_shard_prefix: str = Field(alias='HF_DPO_DATASET_SHARD_PREFIX')
+
     number_of_cpu_processes: int = Field(default=0, alias='NUMBER_OF_CPU_PROCESSES')
 
     pretrain_dataloader_root_path: str = Field(alias='PRETRAIN_DATALOADER_ROOT_PATH')
     instruct_dataloader_root_path: str = Field(alias='INSTRUCT_DATALOADER_ROOT_PATH')
+    dpo_dataloader_root_path: str = Field(alias='DPO_DATALOADER_ROOT_PATH')
     hellaswag_path: str = Field(alias='HELLASWAG_PATH')
 
     # save / load path
@@ -27,6 +34,8 @@ class TrainConfig(BaseSettings):
     pretrain_load_checkpoints_path: str = Field(alias='PRETRAIN_LOAD_CHECKPOINTS_PATH')
     instruct_save_checkpoints_path: str = Field(alias='INSTRUCT_SAVE_CHECKPOINTS_PATH')
     instruct_load_checkpoints_path: str = Field(alias='INSTRUCT_LOAD_CHECKPOINTS_PATH')
+    dpo_save_checkpoints_path: str = Field(alias='DPO_SAVE_CHECKPOINTS_PATH')
+    dpo_load_checkpoints_path: str = Field(alias='DPO_LOAD_CHECKPOINTS_PATH')
 
     save_checkpoints: bool = Field(default=False, alias='SAVE_CHECKPOINTS')
 
@@ -48,6 +57,7 @@ class TrainConfig(BaseSettings):
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
     is_instruct_training: bool = Field(default=False, alias='IS_INSTRUCT_TRAINING')
+    is_dpo_training: bool = Field(default=False, alias='IS_DPO_TRAINING')
     is_model_distillation: bool = Field(alias='IS_MODEL_DISTILLATION')
     distillation_temperature: float = Field(alias='DISTILLATION_TEMPERATURE')
     # The teacher model is loader via huggingface API: AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, ...) so needs to ve a valid checkpoint.
@@ -69,6 +79,7 @@ class TrainConfig(BaseSettings):
     # test prompts
     test_pretrain_generation_prompts: list[str] = Field(alias='TEST_PRETRAIN_GENERATION_PROMPTS')
     test_instruct_generation_prompts: list[str] = Field(alias='TEST_INSTRUCT_GENERATION_PROMPTS')
+    test_dpo_generation_prompts: list[str] = Field(alias='TEST_DPO_GENERATION_PROMPTS')
 
     # model architecture config
     dim: int = Field(default=768, alias='DIM')
