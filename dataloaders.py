@@ -274,7 +274,7 @@ def init_data_loaders(
     num_processes,
     data_root,
     is_instruct_training=False,
-    is_dpo=False,
+    is_dpo_training=False,
     pad_id=None
 ):
     if is_instruct_training:
@@ -308,7 +308,7 @@ def init_data_loaders(
             pad_id=pad_id,
             drop_last=False,
         )
-    elif is_dpo:
+    elif is_dpo_training:
         assert pad_id is not None
 
         if is_master_process:

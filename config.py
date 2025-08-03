@@ -58,6 +58,7 @@ class TrainConfig(BaseSettings):
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
     is_instruct_training: bool = Field(default=False, alias='IS_INSTRUCT_TRAINING')
     is_dpo_training: bool = Field(default=False, alias='IS_DPO_TRAINING')
+    dpo_beta: float = Field(default=0.1, alias='DPO_BETA')
     is_model_distillation: bool = Field(alias='IS_MODEL_DISTILLATION')
     distillation_temperature: float = Field(alias='DISTILLATION_TEMPERATURE')
     # The teacher model is loader via huggingface API: AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, ...) so needs to ve a valid checkpoint.

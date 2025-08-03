@@ -27,6 +27,9 @@ from lora import apply_lora
 if config.is_instruct_training:
     dataloader_root_path = config.instruct_dataloader_root_path
     save_checkpoints_path = config.instruct_save_checkpoints_path
+elif config.is_dpo_training:
+    dataloader_root_path = config.dpo_dataloader_root_path
+    save_checkpoints_path = config.dpo_savecheckpoints_path
 else:
     dataloader_root_path = config.pretrain_dataloader_root_path
     save_checkpoints_path = config.pretrain_save_checkpoints_path
@@ -36,6 +39,7 @@ hellaswag_path = config.hellaswag_path
 # load path
 pretrain_checkpoints_path = config.pretrain_load_checkpoints_path
 instruct_checkpoints_path = config.instruct_load_checkpoints_path
+dpo_checkpoints_path = config.dpo_load_checkpoints_path
 
 # save toggle
 save_checkpoints = config.save_checkpoints
@@ -57,6 +61,8 @@ max_steps = config.max_steps
 early_stopping_patience = config.early_stopping_patience
 early_stopping_patience_skip_steps = config.early_stopping_patience_skip_steps
 is_instruct_training = config.is_instruct_training
+is_dpo_training = config.is_dpo_training
+dpo_beta = config.dpo_beta
 is_model_distillation = config.is_model_distillation
 distillation_temperature = config.distillation_temperature
 # The teacher model is loader via huggingface API: AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, ...) so needs to ve a valid checkpoint.
@@ -78,6 +84,7 @@ max_test_gen_len = config.max_test_gen_len
 # test prompts
 test_pretrain_generation_prompts = config.test_pretrain_generation_prompts
 test_instruct_generation_prompts = config.test_instruct_generation_prompts
+test_dpo_generation_prompts = config.test_dpo_generation_prompts
 
 # Init the tokenizer
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
@@ -126,6 +133,7 @@ def distillation_loss(teacher_logits, student_logits, temperature=1.0):
 parser = argparse.ArgumentParser(description='Script options')
 parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
 parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
+parser.add_argument('--dpo_checkpoint', type=str, default=None, help='DPO checkpoint to load.')
 parser.add_argument('--reset-optimizer', action='store_true', help='Reset the optimizer state when loading a checkpoint.')
 parser.add_argument('--start-step', type=int, default=None, help='Starting step number for training.')
 
@@ -152,6 +160,9 @@ if args.pretrain_checkpoint:
 elif args.instruct_checkpoint:
     load_checkpoints_path = instruct_checkpoints_path
     checkpoint = args.instruct_checkpoint
+elif args.dpo_checkpoint:
+    load_checkpoints_path = dpo_checkpoints_path
+    checkpoint = arg.dpo_checkpoint
 
 # defaults
 loaded_model_state = None
@@ -191,6 +202,7 @@ train_loader, val_loader = init_data_loaders(
     num_processes=ddp_world_size,
     data_root=dataloader_root_path,
     is_instruct_training=is_instruct_training,
+    is_dpo_training=is_dpo_training,
     pad_id=model_config.pad_token_id
 )
 
@@ -250,6 +262,8 @@ if max_steps == -1:
 test_generation_prompts = test_pretrain_generation_prompts
 if is_instruct_training:
     test_generation_prompts = test_instruct_generation_prompts
+if is_dpo_training:
+    test_generation_prompts = test_dpo_generation_prompts
 
 # Model distillation setup
 teacher_model = None
@@ -294,6 +308,8 @@ if is_master_process:
 if is_master_process:
     if is_instruct_training:
         print('\nSFT configuration:')
+    elif is_dpo_training:
+        print('\nDPO configuration:')
     else:
         print('\nPretrain configuration:')
     print('----------------------------------------')
@@ -319,6 +335,8 @@ if is_master_process:
     print(f'max steps: {max_steps}')
     if is_instruct_training:
         m_factor = 0.3 # 0.2–0.5 is typical
+    elif is_dpo_training:
+        pass # to be set
     else:
         m_factor = 20.0 # Chinchilla
     tokens_required_for_model_size = int(model_params * m_factor)
@@ -336,6 +354,8 @@ if is_master_process:
     print(f'early stopping patience: {early_stopping_patience}')
     if is_instruct_training:
         print(f'using instruct format: {is_instruct_training}')
+    if is_dpo_training:
+        pass # to be set
     if is_model_distillation:
         print(f'performing model distillation: {is_model_distillation}')
         print(f'distillation temperature set to: {distillation_temperature}')
@@ -371,8 +391,11 @@ tqdm_label = 'Training'
 if is_instruct_training:
     tqdm_label = 'Training (SFT)'
 
+if is_dpo_training:
+    tqdm_label = 'Training (DPO)'
+
 if is_model_distillation:
-    tqdm_label += ' (Distil)'
+    tqdm_label = 'Training (Distil)'
 
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
