@@ -99,7 +99,7 @@ def tokenize(doc):
     rejected_input_ids = build_answer_sequence(rejected_assistant[-1])
 
     return { 
-        'prompt_input_ids':prompt_input_ids,
+        'prompt_input_ids': prompt_input_ids,
         'chosen_input_ids': chosen_input_ids,
         'rejected_input_ids': rejected_input_ids 
     }

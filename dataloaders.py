@@ -277,38 +277,7 @@ def init_data_loaders(
     is_dpo_training=False,
     pad_id=None
 ):
-    if is_instruct_training:
-        assert pad_id is not None
-
-        if is_master_process:
-            print('Instruct Finetuning Data Loaders:')
-            print('----------------------------------------')
-
-        train_loader = InstructDataLoader(
-            batch_size=batch_size,
-            sequence_length=sequence_length,
-            is_master_process=is_master_process,
-            process_rank=process_rank,
-            num_processes=num_processes,
-            data_root=data_root,
-            split='train',
-            use_shuffle=True,
-            pad_id=pad_id,
-            drop_last=True,
-        )
-        val_loader = InstructDataLoader(
-            batch_size=batch_size,
-            sequence_length=sequence_length,
-            is_master_process=is_master_process,
-            process_rank=process_rank,
-            num_processes=num_processes,
-            data_root=data_root,
-            split='val',
-            use_shuffle=False,
-            pad_id=pad_id,
-            drop_last=False,
-        )
-    elif is_dpo_training:
+    if is_dpo_training:
         assert pad_id is not None
 
         if is_master_process:
@@ -328,6 +297,37 @@ def init_data_loaders(
             drop_last=False,
         )
         val_loader = DirectPreferenceOptimizationDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='val',
+            use_shuffle=False,
+            pad_id=pad_id,
+            drop_last=False,
+        )
+    elif is_instruct_training:
+        assert pad_id is not None
+
+        if is_master_process:
+            print('Instruct Finetuning Data Loaders:')
+            print('----------------------------------------')
+
+        train_loader = InstructDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='train',
+            use_shuffle=True,
+            pad_id=pad_id,
+            drop_last=True,
+        )
+        val_loader = InstructDataLoader(
             batch_size=batch_size,
             sequence_length=sequence_length,
             is_master_process=is_master_process,

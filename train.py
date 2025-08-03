@@ -24,12 +24,12 @@ from lora import apply_lora
 ########## CONFIGURATION ##########
 
 # datasets path / save checkpoints path
-if config.is_instruct_training:
+if config.is_dpo_training:
+    dataloader_root_path = config.dpo_dataloader_root_path
+    save_checkpoints_path = config.dpo_save_checkpoints_path
+elif config.is_instruct_training:
     dataloader_root_path = config.instruct_dataloader_root_path
     save_checkpoints_path = config.instruct_save_checkpoints_path
-elif config.is_dpo_training:
-    dataloader_root_path = config.dpo_dataloader_root_path
-    save_checkpoints_path = config.dpo_savecheckpoints_path
 else:
     dataloader_root_path = config.pretrain_dataloader_root_path
     save_checkpoints_path = config.pretrain_save_checkpoints_path
