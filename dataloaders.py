@@ -166,6 +166,106 @@ class InstructDataLoader:
         self.sampler.epoch = epoch
         self._iterator = iter(self._dataloader)
 
+class DirectPreferenceOptimizationDataLoader:
+    def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle, pad_id, drop_last):
+        self.B = batch_size
+        self.S = sequence_length
+
+        dataset = datasets.load_from_disk(os.path.join(data_root, split))
+        if is_master_process:
+            print(f'found {len(dataset)} examples for {split}')
+
+        self.is_master_process = is_master_process
+
+        assert isinstance(dataset, datasets.Dataset)
+
+        self.sampler = DistributedSampler(
+            dataset,
+            num_replicas=num_processes,
+            rank=process_rank,
+            shuffle=use_shuffle
+        )
+
+        def collate(examples):
+            prompt = [torch.tensor(e['prompt_input_ids']) for e in examples]
+            chosen = [torch.tensor(e['chosen_input_ids']) for e in examples]
+            rejected = [torch.tensor(e['rejected_input_ids']) for e in examples]
+
+            prompt_padded = pad_sequence(
+                prompt,
+                batch_first=True,
+                padding_value=int(pad_id)
+            )
+            if prompt_padded.size(1) > sequence_length:
+                prompt_padded = prompt_padded[:, -sequence_length:]
+
+            chosen_padded = pad_sequence(
+                chosen,
+                batch_first=True,
+                padding_value=int(pad_id)
+            )
+            if chosen_padded.size(1) > sequence_length:
+                chosen_padded = chosen_padded[:, -sequence_length:]
+
+            rejected_padded = pad_sequence(
+                rejected,
+                batch_first=True,
+                padding_value=int(pad_id)
+            )
+            if rejected_padded.size(1) > sequence_length:
+                rejected_padded = rejected_padded[:, -sequence_length:]
+
+            return prompt_padded, chosen_padded, rejected_padded
+
+        self._dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=self.sampler,
+            collate_fn=collate,
+            drop_last=drop_last,
+            pin_memory=True
+        )
+        self._iterator = iter(self._dataloader)
+
+    def next_batch(self):
+        try:
+            return next(self._iterator)
+        except StopIteration:
+            self.reset()
+            return next(self._iterator)
+
+    def reset(self):
+        if hasattr(self.sampler, 'set_epoch'):
+            update_epoch = 0
+            if hasattr(self.sampler, 'epoch'):
+                update_epoch = self.sampler.epoch + 1
+            self.sampler.set_epoch(update_epoch)
+        self._iterator = iter(self._dataloader)
+
+    def num_examples(self):
+        return len(self._dataloader.dataset)
+
+    def calculate_max_tokens(self):
+        return sum(self._dataloader.dataset.map(
+            lambda ex: {'len': len(ex['prompt_input_ids']) + len(ex['chosen_input_ids']) + len(ex['rejected_input_ids'])},
+            num_proc=config.number_of_cpu_processes,
+            remove_columns=[],
+            desc='Calculating number of tokens'
+        )['len'])
+
+    def state_dict(self):
+        return {'epoch': getattr(self.sampler, 'epoch', 0)}
+
+    def load_state_dict(self, state):
+        if 'epoch' not in state:
+            if self.is_master_process:
+                print('Warning - "epoch" not present, starting fresh dataloader (most likely transition from pretraining to DPO).')
+            return
+        epoch = state['epoch']
+        self.sampler.set_epoch(epoch)
+        self.sampler.epoch = epoch
+        self._iterator = iter(self._dataloader)
+
 def init_data_loaders(
     batch_size,
     sequence_length,
@@ -174,33 +274,10 @@ def init_data_loaders(
     num_processes,
     data_root,
     is_instruct_training=False,
+    is_dpo=False,
     pad_id=None
 ):
-    if not is_instruct_training:
-        if is_master_process:
-            print('Pretrain Data Loaders:')
-            print('----------------------------------------')
-        train_loader = PretrainDataLoader(
-            batch_size=batch_size,
-            sequence_length=sequence_length,
-            is_master_process=is_master_process,
-            process_rank=process_rank,
-            num_processes=num_processes,
-            data_root=data_root,
-            split='train',
-            use_shuffle=True
-        )
-        val_loader = PretrainDataLoader(
-            batch_size=batch_size,
-            sequence_length=sequence_length,
-            is_master_process=is_master_process,
-            process_rank=process_rank,
-            num_processes=num_processes,
-            data_root=data_root,
-            split='val',
-            use_shuffle=True
-        )
-    else:
+    if is_instruct_training:
         assert pad_id is not None
 
         if is_master_process:
@@ -230,6 +307,62 @@ def init_data_loaders(
             use_shuffle=False,
             pad_id=pad_id,
             drop_last=False,
+        )
+    elif is_dpo:
+        assert pad_id is not None
+
+        if is_master_process:
+            print('Direct Preference Optimization Data Loaders:')
+            print('----------------------------------------')
+
+        train_loader = DirectPreferenceOptimizationDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='train',
+            use_shuffle=True,
+            pad_id=pad_id,
+            drop_last=False,
+        )
+        val_loader = DirectPreferenceOptimizationDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='val',
+            use_shuffle=False,
+            pad_id=pad_id,
+            drop_last=False,
+        )
+    else:
+        if is_master_process:
+            print('Pretrain Data Loaders:')
+            print('----------------------------------------')
+
+        train_loader = PretrainDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='train',
+            use_shuffle=True
+        )
+        val_loader = PretrainDataLoader(
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            is_master_process=is_master_process,
+            process_rank=process_rank,
+            num_processes=num_processes,
+            data_root=data_root,
+            split='val',
+            use_shuffle=True
         )
 
     return train_loader, val_loader
