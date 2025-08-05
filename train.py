@@ -430,6 +430,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         val_loss_sum = torch.tensor(0.0, device=device)
         val_tok_sum = torch.tensor(0.0, device=device)
 
+        dpo_metrics = None
         with torch.no_grad():
             for _ in tqdm(range(val_steps), 'Validating'):
                 if is_dpo_training:
@@ -443,7 +444,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
                         reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
                         reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
 
-                    loss = dpo_loss(
+                    loss, dpo_metrics = dpo_loss(
                         policy_log_probs_pos,
                         policy_log_probs_neg,
                         reference_log_probs_pos,
@@ -469,6 +470,11 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
         if is_master_process:
             print(f'validation loss: {val_ce:.4f}')
+            wnb_metrics = {'Validation Loss': val_ce}
+            if is_dpo_training:
+                print(dpo_metrics['str'])
+                wnb_metrics.update(dpo_metrics['wnb'])
+            wnb.log(wnb_metrics)
 
             if val_ce < best_val_loss:
                 best_val_loss = val_ce
@@ -484,8 +490,6 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
                     print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}')
 
                 print('Skipping save checkpoint...')
-
-            wnb.log({'Validation Loss': val_ce})
 
             stop_signal = torch.tensor([0], device=device)
             if epochs_no_improve == early_stopping_patience:
@@ -547,6 +551,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
     optimizer.zero_grad()
     train_loss_local_sum = 0.0
     train_tok_local_sum = 0
+    dpo_metrics = None
     for micro_step in range(grad_accum_steps):
         if is_dpo_training:
             # x, y, z = prompt, chosen, rejected
@@ -562,7 +567,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
                     reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
                     reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
 
-            loss = dpo_loss(
+            loss, dpo_metrics = dpo_loss(
                 policy_log_probs_pos,
                 policy_log_probs_neg,
                 reference_log_probs_pos,
@@ -573,7 +578,6 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             loss_scaled = loss / grad_accum_steps
 
             n_valid = x.size(0) # Assume 1 valid example as the entire triple.
-
         else:
             x, y = train_loader.next_batch()
             x, y = x.to(device), y.to(device)
@@ -636,7 +640,11 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
     if is_master_process:
         print(f'step: {step:4d} | train loss: {train_ce:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
-        wnb.log({'Train Loss': train_ce})
+        wnb_metrics = {'Train Loss': train_ce}
+        if is_dpo_training:
+            print(dpo_metrics['str'])
+            wnb_metrics.update(dpo_metrics['wnb'])
+        wnb.log(wnb_metrics)
 
 if ddp:
     barrier(device_ids=[ddp_local_rank])

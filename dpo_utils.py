@@ -54,7 +54,32 @@ def dpo_loss(
     ''' Computes the DPO loss.
         For reference, Direct Preference Optimization paper: https://arxiv.org/pdf/2305.18290
     '''
+    beta = torch.as_tensor(beta, dtype=policy_log_probs_pos.dtype, device=policy_log_probs_pos.device)
+
     pos_difference = policy_log_probs_pos - reference_log_probs_pos
     neg_difference = policy_log_probs_neg - reference_log_probs_neg
+    margin = pos_difference - neg_difference
 
-    return - F.logsigmoid(beta * (pos_difference - neg_difference)).mean()
+    loss =  - F.logsigmoid(beta * margin).mean()
+
+    # metrics
+    rewards_chosen = pos_difference.mean().item()
+    rewards_rejected = neg_difference.mean().item()
+    accuracy = (pos_difference > neg_difference).float().mean().item()
+    margin_avg = margin.mean().item()
+    pol_logprobs_pos = policy_log_probs_pos.mean().item()
+    pol_logprobs_neg = policy_log_probs_neg.mean().item()
+
+    metrics_s = f'rewards/chosen: {rewards_chosen:4f} | rewards/rejected: {rewards_rejected:4f} | accuracy: {accuracy:4f} | margin: {margin_avg:4f} | pol_logprobs/chosen: {pol_logprobs_pos:4f} | pol_logprobs/rejected: {pol_logprobs_neg:4f}'
+    metrics = {
+        'str': metrics_s,
+        'wnb': {
+            'Rewards/Chosen': rewards_chosen,
+            'Rewards/Rejected': rewards_rejected,
+            'Accuracy': accuracy,
+            'Margin': margin_avg,
+            'PolicyLogP/Chosen': pol_logprobs_pos,
+            'PolicyLogP/Rejected': pol_logprobs_neg
+        }
+    }
+    return loss, metrics
