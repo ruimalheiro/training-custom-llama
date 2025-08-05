@@ -4,21 +4,41 @@ import torch.distributed as dist
 import argparse
 import time
 import math
+import copy
 
-from torch.distributed import broadcast, barrier, destroy_process_group
 from tokenizer import init_tokenizer
-from model import Transformer, ModelConfig
-from model_utils import print_model_config, save_model, load_model, init_multi_gpu, prepare_model_for_ddp, WnbWrapper
 from dataloaders import init_data_loaders
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM
+from config import config
+from lora import apply_lora
+
+from torch.distributed import (
+    broadcast,
+    barrier,
+    destroy_process_group
+)
+from model import (
+    Transformer,
+    ModelConfig
+)
+from model_utils import (
+    print_model_config,
+    save_model,
+    load_model,
+    init_multi_gpu,
+    prepare_model_for_ddp,
+    WnbWrapper
+)
 from hellaswag_utils import (
     iterate_hellaswag_val_examples,
     prepare_hellaswag_example,
     estimate_correct_candidate_selection
 )
-from tqdm import tqdm
-from transformers import AutoModelForCausalLM
-from config import config
-from lora import apply_lora
+from dpo_utils import (
+    dpo_log_probs,
+    dpo_loss
+)
 
 
 ########## CONFIGURATION ##########
@@ -162,7 +182,7 @@ elif args.instruct_checkpoint:
     checkpoint = args.instruct_checkpoint
 elif args.dpo_checkpoint:
     load_checkpoints_path = dpo_checkpoints_path
-    checkpoint = arg.dpo_checkpoint
+    checkpoint = args.dpo_checkpoint
 
 # defaults
 loaded_model_state = None
@@ -265,13 +285,6 @@ if is_instruct_training:
 if is_dpo_training:
     test_generation_prompts = test_dpo_generation_prompts
 
-# Model distillation setup
-teacher_model = None
-if is_model_distillation:
-    print(f'Loading teacher model on gpu: {ddp_rank}...')
-    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
-    print(f'Finished loading teacher model on gpu: {ddp_rank}...')
-
 # Init the optimizer
 optimizer = model.configure_adamw_optimizer(
     weight_decay=weight_decay,
@@ -298,14 +311,28 @@ if loaded_optimizer_state is not None:
 
 model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
 
+# Model distillation setup
+teacher_model = None
+if is_model_distillation:
+    print(f'Loading teacher model on gpu: {ddp_rank}...')
+    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
+    print(f'Finished loading teacher model on gpu: {ddp_rank}...')
+
+# DPO (Direct Preference Optimization) reference model setup
+if is_dpo_training:
+    print(f'Preparing DPO reference model...')
+    dpo_ref_model = copy.deepcopy(model).eval().to(device)
+    for p in dpo_ref_model.parameters():
+        p.requires_grad = False
+    print(f'Finished preparing DPO reference model')
+
+########## CONFIG SUMMARY ##########
 if is_master_process:
     current_lr = optimizer.param_groups[0]['lr']
     scheduled_lr = get_lr(start_step)
     print(f'LR stored in checkpoint: {current_lr:.4e}')
     print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
 
-########## CONFIG SUMMARY ##########
-if is_master_process:
     if is_instruct_training:
         print('\nSFT configuration:')
     elif is_dpo_training:
@@ -397,6 +424,7 @@ if is_dpo_training:
 if is_model_distillation:
     tqdm_label = 'Training (Distil)'
 
+is_pretraining = not is_dpo_training and not is_instruct_training
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
 early_stopping_patience_skip_steps += start_step
@@ -416,12 +444,32 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
         with torch.no_grad():
             for _ in tqdm(range(val_steps), 'Validating'):
-                x, y = val_loader.next_batch()
-                x, y = x.to(device), y.to(device)
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    loss = model(x, labels=y)['loss']
+                if is_dpo_training:
+                    # x, y, z = prompt, chosen, rejected
+                    x, y, z = val_loader.next_batch()
+                    x, y, z = x.to(device), y.to(device), z.to(device)
 
-                n_valid = (y != -100).sum().float()
+                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                        policy_log_probs_pos = dpo_log_probs(model, x, y)
+                        policy_log_probs_neg = dpo_log_probs(model, x, z)
+                        reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
+                        reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
+
+                    loss = dpo_loss(
+                        policy_log_probs_pos,
+                        policy_log_probs_neg,
+                        reference_log_probs_pos,
+                        reference_log_probs_neg,
+                        dpo_beta
+                    )
+                    n_valid = torch.tensor(x.size(0), device=device) # Assume 1 valid example as the entire triple.
+                else:
+                    x, y = val_loader.next_batch()
+                    x, y = x.to(device), y.to(device)
+                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                        loss = model(x, labels=y)['loss']
+
+                    n_valid = (y != -100).sum().float()
                 val_loss_sum += loss * n_valid
                 val_tok_sum += n_valid
 
@@ -459,7 +507,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         if ddp:
             broadcast(abort_if_no_improve, src=0)
 
-    if not is_instruct_training and step > 0 and step % hellaswag_every_x_steps == 0 or (not is_instruct_training and last_step):
+    if is_pretraining and (step > 0 and step % hellaswag_every_x_steps == 0 or last_step):
         model.eval()
         num_correct_norm = 0
         num_total = 0
@@ -512,22 +560,51 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
     train_loss_local_sum = 0.0
     train_tok_local_sum = 0
     for micro_step in range(grad_accum_steps):
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
+        if is_dpo_training:
+            # x, y, z = prompt, chosen, rejected
+            x, y, z = train_loader.next_batch()
+            x, y, z = x.to(device), y.to(device), z.to(device)
 
-        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-            result = model(x, labels=y)
-            loss = result['loss']
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                policy_log_probs_pos = dpo_log_probs(model, x, y)
+                policy_log_probs_neg = dpo_log_probs(model, x, z)
 
-        loss_scaled = loss / grad_accum_steps
-        if is_model_distillation and teacher_model:
             with torch.no_grad():
-                teacher_logits = teacher_model(input_ids=x).logits
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
+                    reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
 
-            loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
-            loss_scaled += loss_distil / grad_accum_steps
+            loss = dpo_loss(
+                policy_log_probs_pos,
+                policy_log_probs_neg,
+                reference_log_probs_pos,
+                reference_log_probs_neg,
+                dpo_beta
+            )
 
-        n_valid = (y != -100).sum().item()
+            loss_scaled = loss / grad_accum_steps
+
+            n_valid = x.size(0) # Assume 1 valid example as the entire triple.
+
+        else:
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                result = model(x, labels=y)
+                loss = result['loss']
+
+            loss_scaled = loss / grad_accum_steps
+            if is_model_distillation and teacher_model:
+                with torch.no_grad():
+                    # NOTE: The vocabularies must match otherwise there will be an error.
+                    teacher_logits = teacher_model(input_ids=x).logits
+
+                loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
+                loss_scaled += loss_distil / grad_accum_steps
+
+            n_valid = (y != -100).sum().item()
+
         train_loss_local_sum += loss.item() * n_valid
         train_tok_local_sum  += n_valid
 

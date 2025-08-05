@@ -32,6 +32,7 @@ The implementation in this project is a bit different but the core ideas are the
   - Note: At the moment these need to be passed as flags when running the script.
 - Hellaswag for extra validation
 - LoRA configuration
+- Direct Preference Optimization (DPO)
 
 
 ## Instructions
