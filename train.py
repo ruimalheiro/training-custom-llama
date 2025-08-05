@@ -12,6 +12,8 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM
 from config import config
 from lora import apply_lora
+from lr_schedulers import cosine_scheduler
+from distillation_utils import distillation_loss
 
 from torch.distributed import (
     broadcast,
@@ -126,28 +128,6 @@ model_config = ModelConfig(
     pad_token_id = tokenizer.pad_id,
     stop_tokens = tokenizer.stop_tokens
 )
-
-########## AUX FUNCTIONS ##########
-# TODO be moved to another file.
-
-def get_lr(it):
-    # cosine lr scheduler
-    if it < warmup_steps:
-        return max_lr * (it + 1) / warmup_steps
-    if it > max_steps:
-        return min_lr
-    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
-    assert 0 <= decay_ratio <=1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return min_lr + coeff * (max_lr - min_lr)
-
-def distillation_loss(teacher_logits, student_logits, temperature=1.0):
-    teacher_probabilities = F.softmax(teacher_logits.view(-1, teacher_logits.size(-1)) / temperature, dim=-1)
-    student_log_probabilities = F.log_softmax(student_logits / temperature, dim=-1)
-
-    kl_divergence = F.kl_div(student_log_probabilities, teacher_probabilities, reduction='batchmean') * (temperature ** 2)
-    return kl_divergence
-
 
 ########## TERMINAL OPTIONS ##########
 parser = argparse.ArgumentParser(description='Script options')
@@ -329,7 +309,7 @@ if is_dpo_training:
 ########## CONFIG SUMMARY ##########
 if is_master_process:
     current_lr = optimizer.param_groups[0]['lr']
-    scheduled_lr = get_lr(start_step)
+    scheduled_lr = cosine_scheduler(start_step, min_lr, max_lr, warmup_steps, max_steps)
     print(f'LR stored in checkpoint: {current_lr:.4e}')
     print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
 
@@ -630,7 +610,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-    lr = get_lr(step)
+    lr = cosine_scheduler(step, min_lr, max_lr, warmup_steps, max_steps)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
