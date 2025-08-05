@@ -361,9 +361,9 @@ if is_master_process:
     print(f'weight decay: {weight_decay}')
     print(f'max steps: {max_steps}')
     if is_instruct_training:
-        m_factor = 0.3 # 0.2–0.5 is typical
+        m_factor = 0.3 # ~0.2 to ~0.5 is reasonable
     elif is_dpo_training:
-        pass # to be set
+        m_factor = 0.1 # ~0.15 to ~0.15 is reasonable
     else:
         m_factor = 20.0 # Chinchilla
     tokens_required_for_model_size = int(model_params * m_factor)
@@ -382,7 +382,7 @@ if is_master_process:
     if is_instruct_training:
         print(f'using instruct format: {is_instruct_training}')
     if is_dpo_training:
-        pass # to be set
+        print(f'performing DPO alignment: {is_dpo_training}')
     if is_model_distillation:
         print(f'performing model distillation: {is_model_distillation}')
         print(f'distillation temperature set to: {distillation_temperature}')

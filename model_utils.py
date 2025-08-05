@@ -170,7 +170,6 @@ def init_multi_gpu(seed=None):
             print(f'DDP local rank: {ddp_local_rank}')
         if ddp_world_size:
             print(f'DDP world size: {ddp_world_size}')
-        print('\n')
 
     if seed is not None:
         torch.manual_seed(seed)
