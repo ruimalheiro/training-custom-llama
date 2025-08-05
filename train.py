@@ -245,11 +245,19 @@ model.to(device)
 
 torch.set_float32_matmul_precision('high')
 
-assert total_batch_size % (model_config.max_batch_size * model_config.max_seq_len) == 0
+########## BATCH SIZE ASSERTIONS ##########
 
+# NOTE: total_batch_size is the total batch size in tokens. The model max_batch_size is the number of sequences per device during forward pass (micro batches).
+# The total batch size must be a multiple of (max_batch_size * max_seq_len * ddp_world_size). This is needed for the gradient accumulation steps to be calculated correctly.
+assert total_batch_size % (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size) == 0, 'total_batch_size must be divisible by (max_batch_size * max_seq_len * ddp_world_size)'
+
+# Gradient accumulation steps
 grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size)
 
+# Final check to validate previous calculations.
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
+
+#########################################
 
 total_tokens = train_loader.calculate_max_tokens()
 model_params = model.get_parameters_count()
