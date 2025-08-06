@@ -1,5 +1,11 @@
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
+from enum import Enum
+
+class TrainingStage(str, Enum):
+    PRETRAIN = 'pretrain'
+    INSTRUCT = 'instruct'
+    DPO = 'dpo'
 
 class TrainConfig(BaseSettings):
     # datasets_path
@@ -48,6 +54,7 @@ class TrainConfig(BaseSettings):
     huggingface_tokenizer: bool = Field(default=False, alias='HUGGINGFACE_TOKENIZER')
 
     # train config
+    training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')
     max_lr: float = Field(alias='MAX_LR')
     min_lr: float = Field(alias='MIN_LR')
@@ -56,8 +63,6 @@ class TrainConfig(BaseSettings):
     max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
-    is_instruct_training: bool = Field(default=False, alias='IS_INSTRUCT_TRAINING')
-    is_dpo_training: bool = Field(default=False, alias='IS_DPO_TRAINING')
     dpo_beta: float = Field(default=0.1, alias='DPO_BETA')
     is_model_distillation: bool = Field(alias='IS_MODEL_DISTILLATION')
     distillation_temperature: float = Field(alias='DISTILLATION_TEMPERATURE')

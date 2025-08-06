@@ -7,7 +7,10 @@ import datasets
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
-from config import config
+from config import (
+    TrainingStage,
+    config
+)
 
 
 def load_tokens(filename):
@@ -273,18 +276,15 @@ def init_data_loaders(
     process_rank,
     num_processes,
     data_root,
-    is_instruct_training=False,
-    is_dpo_training=False,
+    training_stage,
     pad_id=None
 ):
-    if is_dpo_training:
-        assert pad_id is not None
-
+    if training_stage == TrainingStage.PRETRAIN:
         if is_master_process:
-            print('Direct Preference Optimization Data Loaders:')
+            print('Pretrain Data Loaders:')
             print('----------------------------------------')
 
-        train_loader = DirectPreferenceOptimizationDataLoader(
+        train_loader = PretrainDataLoader(
             batch_size=batch_size,
             sequence_length=sequence_length,
             is_master_process=is_master_process,
@@ -292,11 +292,9 @@ def init_data_loaders(
             num_processes=num_processes,
             data_root=data_root,
             split='train',
-            use_shuffle=True,
-            pad_id=pad_id,
-            drop_last=False,
+            use_shuffle=True
         )
-        val_loader = DirectPreferenceOptimizationDataLoader(
+        val_loader = PretrainDataLoader(
             batch_size=batch_size,
             sequence_length=sequence_length,
             is_master_process=is_master_process,
@@ -304,11 +302,9 @@ def init_data_loaders(
             num_processes=num_processes,
             data_root=data_root,
             split='val',
-            use_shuffle=False,
-            pad_id=pad_id,
-            drop_last=False,
+            use_shuffle=True
         )
-    elif is_instruct_training:
+    elif training_stage == TrainingStage.INSTRUCT:
         assert pad_id is not None
 
         if is_master_process:
@@ -339,12 +335,14 @@ def init_data_loaders(
             pad_id=pad_id,
             drop_last=False,
         )
-    else:
+    elif training_stage == TrainingStage.DPO:
+        assert pad_id is not None
+
         if is_master_process:
-            print('Pretrain Data Loaders:')
+            print('Direct Preference Optimization Data Loaders:')
             print('----------------------------------------')
 
-        train_loader = PretrainDataLoader(
+        train_loader = DirectPreferenceOptimizationDataLoader(
             batch_size=batch_size,
             sequence_length=sequence_length,
             is_master_process=is_master_process,
@@ -352,9 +350,11 @@ def init_data_loaders(
             num_processes=num_processes,
             data_root=data_root,
             split='train',
-            use_shuffle=True
+            use_shuffle=True,
+            pad_id=pad_id,
+            drop_last=False,
         )
-        val_loader = PretrainDataLoader(
+        val_loader = DirectPreferenceOptimizationDataLoader(
             batch_size=batch_size,
             sequence_length=sequence_length,
             is_master_process=is_master_process,
@@ -362,7 +362,11 @@ def init_data_loaders(
             num_processes=num_processes,
             data_root=data_root,
             split='val',
-            use_shuffle=True
+            use_shuffle=False,
+            pad_id=pad_id,
+            drop_last=False,
         )
+    else:
+        raise ValueError('Invalid training stage for dataloader')
 
     return train_loader, val_loader

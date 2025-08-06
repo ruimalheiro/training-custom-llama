@@ -10,27 +10,32 @@ from tokenizer import init_tokenizer
 from dataloaders import init_data_loaders
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM
-from config import config
 from lora import apply_lora
 from lr_schedulers import cosine_scheduler
 from distillation_utils import distillation_loss
+from wnb_utils import WnbWrapper
 
+from config import (
+    config,
+    TrainingStage
+)
 from torch.distributed import (
     broadcast,
     barrier,
     destroy_process_group
+)
+from ddp_utils import (
+    init_multi_gpu,
+    prepare_model_for_ddp
 )
 from model import (
     Transformer,
     ModelConfig
 )
 from model_utils import (
-    print_model_config,
+    print_dict,
     save_model,
-    load_model,
-    init_multi_gpu,
-    prepare_model_for_ddp,
-    WnbWrapper
+    load_model
 )
 from hellaswag_utils import (
     iterate_hellaswag_val_examples,
@@ -45,16 +50,25 @@ from dpo_utils import (
 
 ########## CONFIGURATION ##########
 
+# set training stage
+training_stage = config.training_stage
+
+is_pretraining = True if training_stage == TrainingStage.PRETRAIN else False
+is_instruct_training = True if training_stage == TrainingStage.INSTRUCT else False
+is_dpo_training = True if training_stage == TrainingStage.DPO else False
+
 # datasets path / save checkpoints path
-if config.is_dpo_training:
-    dataloader_root_path = config.dpo_dataloader_root_path
-    save_checkpoints_path = config.dpo_save_checkpoints_path
-elif config.is_instruct_training:
-    dataloader_root_path = config.instruct_dataloader_root_path
-    save_checkpoints_path = config.instruct_save_checkpoints_path
-else:
+if is_pretraining:
     dataloader_root_path = config.pretrain_dataloader_root_path
     save_checkpoints_path = config.pretrain_save_checkpoints_path
+elif is_instruct_training:
+    dataloader_root_path = config.instruct_dataloader_root_path
+    save_checkpoints_path = config.instruct_save_checkpoints_path
+elif is_dpo_training:
+    dataloader_root_path = config.dpo_dataloader_root_path
+    save_checkpoints_path = config.dpo_save_checkpoints_path
+else:
+    raise ValueError('Invalid training stage')
 
 hellaswag_path = config.hellaswag_path
 
@@ -82,12 +96,10 @@ weight_decay = config.weight_decay
 max_steps = config.max_steps
 early_stopping_patience = config.early_stopping_patience
 early_stopping_patience_skip_steps = config.early_stopping_patience_skip_steps
-is_instruct_training = config.is_instruct_training
-is_dpo_training = config.is_dpo_training
 dpo_beta = config.dpo_beta
 is_model_distillation = config.is_model_distillation
 distillation_temperature = config.distillation_temperature
-# The teacher model is loader via huggingface API: AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, ...) so needs to ve a valid checkpoint.
+# The teacher model is loaded via huggingface API: AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, ...) so needs to be a valid checkpoint.
 teacher_model_checkpoint = config.teacher_model_checkpoint
 lora_enabled = config.lora_enabled
 lora_rank = config.lora_rank
@@ -129,7 +141,13 @@ model_config = ModelConfig(
     stop_tokens = tokenizer.stop_tokens
 )
 
-########## TERMINAL OPTIONS ##########
+# Extra metadata to store when saving a checkpoint
+extra_checkpoint_metadata = {
+    'training_stage': training_stage.value,
+    'lora_enabled': lora_enabled
+}
+
+########## SCRIPT OPTIONS ##########
 parser = argparse.ArgumentParser(description='Script options')
 parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
 parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
@@ -181,7 +199,7 @@ if checkpoint is not None:
         best_loss,
         loaded_train_loader_state,
         loaded_val_loader_state,
-        is_lora_checkpoint
+        loaded_extra_checkpoint_metadata
     ) = load_model(
         load_checkpoints_path,
         checkpoint,
@@ -193,6 +211,15 @@ if checkpoint is not None:
     if best_loss < best_val_loss and not args.reset_optimizer:
         best_val_loss = best_loss
 
+    if loaded_extra_checkpoint_metadata.get('training_stage', None) != training_stage:
+        if is_master_process:
+            print('Training stage has changed, ignoring stored metada for dataset...\n')
+        if not args.start_step:
+            start_step = 0
+        loaded_train_loader_state = None
+        loaded_val_loader_state = None
+    is_lora_checkpoint = loaded_extra_checkpoint_metadata.get('lora_enabled', False)
+
 ########## PREPARE DATA LOADERS ##########
 train_loader, val_loader = init_data_loaders(
     batch_size=model_config.max_batch_size,
@@ -201,9 +228,8 @@ train_loader, val_loader = init_data_loaders(
     process_rank=ddp_rank,
     num_processes=ddp_world_size,
     data_root=dataloader_root_path,
-    is_instruct_training=is_instruct_training,
-    is_dpo_training=is_dpo_training,
-    pad_id=model_config.pad_token_id
+    pad_id=model_config.pad_token_id,
+    training_stage=training_stage
 )
 
 if loaded_train_loader_state is not None and loaded_val_loader_state is not None:
@@ -230,7 +256,7 @@ if checkpoint and loaded_model_state:
         print('----------------------------------------')
         print('Model checkpoint loaded and ready')
 
-if lora_enabled:
+if lora_enabled and not is_lora_checkpoint:
     apply_lora(
         model,
         rank=lora_rank,
@@ -395,7 +421,7 @@ if is_master_process:
     if checkpoint is None:
         print('\nModel config')
         print('----------------------------------------')
-        print_model_config(model_config.to_dict())
+        print_dict(model_config.to_dict())
 
 ########## TRAINING ##########
 if ddp:
@@ -412,7 +438,6 @@ if is_dpo_training:
 if is_model_distillation:
     tqdm_label = 'Training (Distil)'
 
-is_pretraining = not is_dpo_training and not is_instruct_training
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
 early_stopping_patience_skip_steps += start_step
@@ -481,7 +506,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
                 epochs_no_improve = 0
 
                 if save_checkpoints is True:
-                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader, lora_enabled)
+                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader, extra_checkpoint_metadata)
             else:
                 if step > early_stopping_patience_skip_steps:
                     epochs_no_improve += 1
