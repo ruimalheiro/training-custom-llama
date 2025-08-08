@@ -78,7 +78,7 @@ class TrainConfig(BaseSettings):
     validate_every_x_steps: int = Field(alias='VALIDATE_EVERY_X_STEPS')
     val_steps: int = Field(alias='VAL_STEPS')
     hellaswag_every_x_steps: int = Field(alias='HELLASWAG_EVERY_X_STEPS')
-    hellagswag_number_of_examples: int = Field(alias='HELLASWAG_NUMBER_OF_EXAMPLES')
+    hellaswag_number_of_examples: int = Field(alias='HELLASWAG_NUMBER_OF_EXAMPLES')
     generate_every_x_steps: int = Field(alias='GENERATE_EVERY_X_STEPS')
     max_test_gen_len: int = Field(alias='MAX_TEST_GEN_LEN')
 

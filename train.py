@@ -113,7 +113,7 @@ lora_target_modules = config.lora_target_modules
 validate_every_x_steps = config.validate_every_x_steps
 val_steps = config.val_steps
 hellaswag_every_x_steps = config.hellaswag_every_x_steps
-hellagswag_number_of_examples = config.hellagswag_number_of_examples
+hellaswag_number_of_examples = config.hellaswag_number_of_examples
 generate_every_x_steps = config.generate_every_x_steps
 max_test_gen_len = config.max_test_gen_len
 
@@ -342,16 +342,10 @@ if is_master_process:
     scheduled_lr = cosine_scheduler(start_step, min_lr, max_lr, warmup_steps, max_steps)
     print(f'LR stored in checkpoint: {current_lr:.4e}')
     print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
-
-    if is_instruct_training:
-        print('\nSFT configuration:')
-    elif is_dpo_training:
-        print('\nDPO configuration:')
-    else:
-        print('\nPretrain configuration:')
+    print(f'\n{training_stage.upper()} configuration:')
     print('----------------------------------------')
     print(f'dataloader data path: "{dataloader_root_path}"')
-    print(f'hellaswag data path: "{hellaswag_path}"')
+    print(f'HellaSwag data path: "{hellaswag_path}"')
 
     if checkpoint is not None:
         print(f'loading checkpoint data path: "{load_checkpoints_path}"')
@@ -370,29 +364,27 @@ if is_master_process:
     print(f'warmup steps: {warmup_steps}')
     print(f'weight decay: {weight_decay}')
     print(f'max steps: {max_steps}')
-    if is_instruct_training:
-        m_factor = 0.3 # ~0.2 to ~0.5 is reasonable
-    elif is_dpo_training:
-        m_factor = 0.1 # ~0.15 to ~0.15 is reasonable
-    else:
-        m_factor = 20.0 # Chinchilla
-    tokens_required_for_model_size = int(model_params * m_factor)
-    steps_needed = math.ceil(tokens_required_for_model_size / total_batch_size)
-    tokens_coverage = max_steps * model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps
-    print(f'model parameter count: {model_params}')
-    print(f'number of tokens in the dataset: {total_tokens}')
-    print(f'full dataset steps: {complete_max_steps}')
-    print(f'heuristic token target [model parameter count * {m_factor}]): {tokens_required_for_model_size}')
-    print(f'dataset covers heuristic? {"YES" if total_tokens >= tokens_required_for_model_size else "NO"}')
-    print(f'number of steps needed for target: {steps_needed}')
-    print(f'configured "max steps" corresponds to {round((max_steps / complete_max_steps) * 100,2)}% of total tokens (~{tokens_coverage})')
-    print(f'configured "max steps" covers heuristic? {"YES" if max_steps >= steps_needed else "NO"}')
+
+    if is_pretraining or is_instruct_training:
+        # For pretraining according to the Chinchilla paper ~20.0 is reasonable. For instruct: ~0.2 to ~0.5 is reasonable
+        m_factor = 20.0 if is_pretraining else 0.3
+        tokens_required_for_model_size = int(model_params * m_factor)
+        steps_needed = math.ceil(tokens_required_for_model_size / total_batch_size)
+        tokens_coverage = max_steps * model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps
+        print(f'model parameter count: {model_params}')
+        print(f'number of tokens in the dataset: {total_tokens}')
+        print(f'full dataset steps: {complete_max_steps}')
+        print(f'heuristic token target [model parameter count * {m_factor}]: {tokens_required_for_model_size}')
+        print(f'dataset covers heuristic? {"YES" if total_tokens >= tokens_required_for_model_size else "NO"}')
+        print(f'number of steps needed for target: {steps_needed}')
+        print(f'configured "max steps" corresponds to {round((max_steps / complete_max_steps) * 100,2)}% of total tokens (~{tokens_coverage})')
+        print(f'configured "max steps" covers heuristic? {"YES" if max_steps >= steps_needed else "NO"}')
+
+    if is_dpo_training:
+        print(f'DPO beta: {dpo_beta}')
 
     print(f'early stopping patience: {early_stopping_patience}')
-    if is_instruct_training:
-        print(f'using instruct format: {is_instruct_training}')
-    if is_dpo_training:
-        print(f'performing DPO alignment: {is_dpo_training}')
+
     if is_model_distillation:
         print(f'performing model distillation: {is_model_distillation}')
         print(f'distillation temperature set to: {distillation_temperature}')
@@ -402,8 +394,8 @@ if is_master_process:
     print('----------------------------------------')
     print(f'number of steps between validation: {validate_every_x_steps}')
     print(f'number of validating steps: {val_steps}')
-    print(f'number of steps between hellaswag validation: {hellaswag_every_x_steps}')
-    print(f'number of hellaswag examples: {hellagswag_number_of_examples}')
+    print(f'number of steps between HellaSwag validation: {hellaswag_every_x_steps}')
+    print(f'number of HellaSwag examples: {hellaswag_number_of_examples}')
     print(f'number of steps between model output generations: {generate_every_x_steps}')
     print(f'max length for the generated text from each prompt: {max_test_gen_len}')
     print(f'generation prompts:')
@@ -424,15 +416,7 @@ if ddp:
     barrier(device_ids=[ddp_local_rank])
 print(f'\nGPU: {ddp_rank} is ready.')
 
-tqdm_label = 'Training'
-if is_instruct_training:
-    tqdm_label = 'Training (SFT)'
-
-if is_dpo_training:
-    tqdm_label = 'Training (DPO)'
-
-if is_model_distillation:
-    tqdm_label = 'Training (Distil)'
+tqdm_label = f'Training ({training_stage.value})'
 
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
@@ -524,7 +508,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         model.eval()
         num_correct_norm = 0
         num_total = 0
-        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellagswag_number_of_examples)), 'Hellaswag validation', unit=' examples'):
+        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples'):
             # if i % ddp_world_size == ddp_rank (gpu itself), process.
             if i % ddp_world_size != ddp_rank:
                 continue
