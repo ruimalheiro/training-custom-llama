@@ -41,6 +41,7 @@ The implementation in this project is a bit different but the core ideas are the
 - `dpo_utils.py` Logic for DPO loss.
 - `hellaswag_utils.py` Contains the main logic to iterate, process and evaluate HellaSwag examples.
 - The files `load_*_dataset.py` download and prepare the datasets to be used for the respective training stage. They load the datasets via `load_dataset` from the `datasets` HF package.
+- `hf_instruct_datasets_mix.json` Contains the definition and possible configurations for the supported datasets and how to mix them.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
 - `model_utils.py` Contains functionality to manage checkpoints, save and load the model. Also contains a dict print helper.
