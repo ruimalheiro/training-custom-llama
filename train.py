@@ -426,7 +426,6 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         print(f'Rank {ddp_rank} received stop signal.')
         break
 
-    t0 = time.time()
     last_step = (step == max_steps - 1)
 
     if step > 0 and step % validate_every_x_steps == 0 or last_step:
@@ -554,14 +553,18 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
     model.train()
     optimizer.zero_grad()
+    t0 = time.time()
     train_loss_local_sum = 0.0
-    train_tok_local_sum = 0
+    train_loss_local_token_sum = 0
+    train_local_token_sum = 0
     dpo_metrics = None
     for micro_step in range(grad_accum_steps):
         if is_dpo_training:
             # x, y, z = prompt, chosen, rejected
             x, y, z = train_loader.next_batch()
             x, y, z = x.to(device), y.to(device), z.to(device)
+
+            train_local_token_sum += 4 * x.numel() + 2 * y.numel() + 2 * z.numel()
 
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                 policy_log_probs_pos = dpo_log_probs(model, x, y)
@@ -587,12 +590,16 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             x, y = train_loader.next_batch()
             x, y = x.to(device), y.to(device)
 
+            train_local_token_sum += x.numel()
+
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                 result = model(x, labels=y)
                 loss = result['loss']
 
             loss_scaled = loss / grad_accum_steps
             if is_model_distillation and teacher_model:
+                train_local_token_sum += x.numel()
+
                 with torch.no_grad():
                     # NOTE: The vocabularies must match otherwise there will be an error.
                     teacher_logits = teacher_model(input_ids=x).logits
@@ -603,7 +610,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
             n_valid = (y != -100).sum().item()
 
         train_loss_local_sum += loss.item() * n_valid
-        train_tok_local_sum  += n_valid
+        train_loss_local_token_sum  += n_valid
 
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
@@ -611,19 +618,18 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         loss_scaled.backward()
 
     train_loss_sum = train_loss_local_sum
-    train_tok_sum = train_tok_local_sum
+    train_loss_token_sum = train_loss_local_token_sum
+    train_token_sum = train_local_token_sum
 
     if ddp:
-        loss_sum = torch.tensor(train_loss_local_sum, device=device)
-        tok_sum  = torch.tensor(train_tok_local_sum,  device=device)
+        reduce_vec = torch.tensor([train_loss_local_sum, train_loss_local_token_sum, train_token_sum], device=device, dtype=torch.float64)
+        dist.all_reduce(reduce_vec, op=dist.ReduceOp.SUM)
 
-        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
-        dist.all_reduce(tok_sum,  op=dist.ReduceOp.SUM)
+        train_loss_sum = float(reduce_vec[0].item())
+        train_loss_token_sum = float(reduce_vec[1].item())
+        train_token_sum = float(reduce_vec[2].item())
 
-        train_loss_sum = loss_sum.item()
-        train_tok_sum  = tok_sum.item()
-
-    train_ce = train_loss_sum / train_tok_sum
+    train_avg_loss = train_loss_sum / train_loss_token_sum
 
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
@@ -637,15 +643,11 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
     t1 = time.time()
     dt = (t1 - t0)
-
-    if not is_instruct_training:
-        tokens_per_sec = (train_loader.B * train_loader.S * grad_accum_steps * ddp_world_size) / dt
-    else:
-        tokens_per_sec = train_tok_sum  / dt
+    tokens_per_sec = train_token_sum / dt
 
     if is_master_process:
-        print(f'step: {step:4d} | train loss: {train_ce:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
-        wnb_metrics = {'Train Loss': train_ce}
+        print(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
+        wnb_metrics = {'Train Loss': train_avg_loss}
         if is_dpo_training:
             print(dpo_metrics['str'])
             wnb_metrics.update(dpo_metrics['wnb'])
