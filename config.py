@@ -15,12 +15,8 @@ class TrainConfig(BaseSettings):
     pretrain_dataset_target_path: str = Field(alias='HF_PRETRAIN_DATASET_TARGET_PATH')
     pretrain_dataset_shard_prefix: str = Field(alias='HF_PRETRAIN_DATASET_SHARD_PREFIX')
 
-    instruct_dataset: str = Field(alias='HF_INSTRUCT_DATASET')
-    instruct_dataset_selector_key: str = Field(alias='HF_INSTRUCT_DATASET_SELECTOR_KEY')
-    instruct_dataset_name: str = Field(default='default', alias='HF_INSTRUCT_DATASET_NAME')
-    instruct_dataset_split: str = Field(default='train', alias='HF_INSTRUCT_DATASET_SPLIT')
+    instruct_dataset_mix_file: str | None = Field(default=None, alias="HF_INSTRUCT_DATASET_MIX_FILE")
     instruct_dataset_target_path: str = Field(alias='HF_INSTRUCT_DATASET_TARGET_PATH')
-    instruct_dataset_shard_prefix: str = Field(alias='HF_INSTRUCT_DATASET_SHARD_PREFIX')
 
     dpo_dataset: str = Field(alias='HF_DPO_DATASET')
     dpo_dataset_name: str = Field(default='default', alias='HF_DPO_DATASET_NAME')
@@ -34,6 +30,9 @@ class TrainConfig(BaseSettings):
     instruct_dataloader_root_path: str = Field(alias='INSTRUCT_DATALOADER_ROOT_PATH')
     dpo_dataloader_root_path: str = Field(alias='DPO_DATALOADER_ROOT_PATH')
     hellaswag_path: str = Field(alias='HELLASWAG_PATH')
+
+    # system prompt
+    system_prompt: str = Field(default='You are a helpful AI assistant', alias='SYSTEM_PROMPT')
 
     # save / load path
     pretrain_save_checkpoints_path: str = Field(alias='PRETRAIN_SAVE_CHECKPOINTS_PATH')

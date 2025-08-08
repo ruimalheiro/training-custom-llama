@@ -69,7 +69,7 @@ def tokenize(doc):
     tokens.extend([sh])
     tokens.extend(tokenizer.encode('system'))
     tokens.extend([eh])
-    tokens.extend(tokenizer.encode('\n' + 'You are a helpful AI assistant'))
+    tokens.extend(tokenizer.encode('\n' + config.system_prompt))
     tokens.extend([eot])
 
     for interaction in prompt_sequence:

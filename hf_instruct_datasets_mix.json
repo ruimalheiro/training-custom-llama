@@ -1,0 +1,18 @@
+{
+    "datasets": [
+        {
+            "id": "HuggingFaceH4/ultrachat_200k",
+            "name": "default",
+            "split": "train_sft",
+            "weight": 1.0,
+            "transforms": {
+                "max_turns": 8
+            }
+        }
+    ],
+    "output": {
+        "target_path": "datasets/instruct",
+        "shard_prefix": "data"
+    },
+    "seed": 42
+}

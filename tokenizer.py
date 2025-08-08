@@ -6,6 +6,7 @@ from pathlib import Path
 from collections import defaultdict
 from tiktoken.load import load_tiktoken_bpe
 from transformers import AutoTokenizer
+from config import config
 
 
 class BaseTokenizer(ABC):
@@ -28,7 +29,7 @@ class BaseTokenizer(ABC):
         if system_msg:
             tokens.extend(self.encode('system'))
             tokens.extend([eh])
-            tokens.extend(self.encode('\n' + 'You are a helpful AI assistant'))
+            tokens.extend(self.encode('\n' + config.system_prompt))
             tokens.extend([eot, sh])
         tokens.extend(self.encode('user'))
         tokens.extend([eh])
