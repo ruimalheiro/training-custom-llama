@@ -1,0 +1,32 @@
+{
+    "pretrain": [
+        "Cats are curious animals that",
+        "A computer is a machine that",
+        "The capital of France is",
+        "In winter, the weather is often",
+        "Chocolate is made from",
+        "The purpose of sleep is to",
+        "A recipe for pancakes includes",
+        "Soccer is played with",
+        "Electric cars use",
+        "Mountains are formed when"
+    ],
+    "instruct": [
+        "Write one sentence about rain.",
+        "Translate \"Good morning\" to Spanish.",
+        "List three fruits.",
+        "Explain what a GPU is in simple words.",
+        "Write a short friendly reply to: Can we meet tomorrow?",
+        "Summarize in one sentence: Penguins are birds that cannot fly but are excellent swimmers.",
+        "Fix the grammar: He don't like apples."
+    ],
+    "dpo": [
+        "Give two tips for staying focused while studying.",
+        "Rewrite this sentence to be shorter: The meeting that was scheduled for Friday has been moved to Monday morning.",
+        "Explain photosynthesis in two short sentences.",
+        "Write a polite refusal to this request: Please share your password.",
+        "Choose a clear title for a blog post about learning Python basics.",
+        "Make this formal sentence casual: I will not be able to attend the event.",
+        "Improve this sentence to be clearer: The issue is due to the problem that happened previously."
+    ]
+}

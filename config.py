@@ -83,9 +83,7 @@ class TrainConfig(BaseSettings):
     max_test_gen_len: int = Field(alias='MAX_TEST_GEN_LEN')
 
     # test prompts
-    test_pretrain_generation_prompts: list[str] = Field(alias='TEST_PRETRAIN_GENERATION_PROMPTS')
-    test_instruct_generation_prompts: list[str] = Field(alias='TEST_INSTRUCT_GENERATION_PROMPTS')
-    test_dpo_generation_prompts: list[str] = Field(alias='TEST_DPO_GENERATION_PROMPTS')
+    test_prompts_path: str = Field(alias='TEST_PROMPTS_FILE')
 
     # model architecture config
     dim: int = Field(default=768, alias='DIM')

@@ -5,7 +5,9 @@ import argparse
 import time
 import math
 import copy
+import json
 
+from pathlib import Path
 from tokenizer import init_tokenizer
 from dataloaders import init_data_loaders
 from tqdm import tqdm
@@ -116,9 +118,9 @@ generate_every_x_steps = config.generate_every_x_steps
 max_test_gen_len = config.max_test_gen_len
 
 # test prompts
-test_pretrain_generation_prompts = config.test_pretrain_generation_prompts
-test_instruct_generation_prompts = config.test_instruct_generation_prompts
-test_dpo_generation_prompts = config.test_dpo_generation_prompts
+test_prompts_data = json.loads(Path(config.test_prompts_path).read_text())
+
+test_generation_prompts = test_prompts_data[training_stage.value]
 
 # Init the tokenizer
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
@@ -292,12 +294,6 @@ complete_max_steps = math.ceil(total_tokens / total_batch_size)
 # max_steps not set
 if max_steps == -1:
     max_steps = complete_max_steps
-
-test_generation_prompts = test_pretrain_generation_prompts
-if is_instruct_training:
-    test_generation_prompts = test_instruct_generation_prompts
-if is_dpo_training:
-    test_generation_prompts = test_dpo_generation_prompts
 
 # Init the optimizer
 optimizer = model.configure_adamw_optimizer(

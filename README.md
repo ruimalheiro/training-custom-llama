@@ -1,20 +1,20 @@
-# Custom Llama implementation and multi-node / multi-GPU training
+# Llama-style transformer and multi-node / multi-GPU training
 
 This is a small project for educational purposes that implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training with Torch DDP.
 
 This repo demonstrates:
-- Llama 3 architecture in pure PyTorch
+- Llama 3 like baseline architecture in pure PyTorch
 - Multi-node training with PyTorch DDP
 - Multiple training methods (SFT, distill, DPO)
 
 **NOTE**: 
 - The project can be adapted for other datasets.
-- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project. The default tokenizer is the tiktoken tokenizer with the same configuration as the one used by Meta. A Hugging Face tokenizer can also be loaded (check the env.example) which I recommend for smaller experiments, especially when the vocabulary is small.
+- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project. The default tokenizer is the tiktoken tokenizer with a configuration similar to Llama 3's tokenizer. A Hugging Face tokenizer can also be loaded (check the env.example) which I recommend for smaller experiments, especially when the vocabulary is small.
 
 ## Model
 The model implementation is based on the Llama 3 architecture - official project from Meta can be found [here](https://github.com/meta-llama/llama3).
 
-The implementation in this project is a bit different but the core ideas are the same. To verify it is correctly implemented, the original pretrained weights released by Meta can be loaded as a smoke test.
+The implementation in this project is a bit different but the core ideas are the same. To verify it is correctly implemented, you can load Meta’s released weights for compatibility testing (not included here).
 - For this test all model architecture hyperparameters need to match.
 
 ## Supported features in the trainer and config options
@@ -23,7 +23,7 @@ The implementation in this project is a bit different but the core ideas are the
 - Pre-training
 - Instruct fine-tuning (SFT)
 - Model distillation
-  - Note that for the moment the teacher model is loaded as a checkpoint loaded from the *Hugging Face Hub*. (You can however adapt it to run any model) 
+  - Note that for the moment the teacher model is loaded from the *Hugging Face Hub*. (You can however adapt it to run any model) 
 - Saving / loading checkpoint
 - Weights & Biases (W&B) integration
 - Early stopping
@@ -36,21 +36,22 @@ The implementation in this project is a bit different but the core ideas are the
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
 - `data_preparation_utils.py` Contains logic to process a dataset into multiple shards.
 - `dataloaders.py` Dataloaders logic to sample and distribute the data.
-- `ddp_utils.py` Contains the main logic to setup the torch DDP (Distributed Data Parallel).
+- `ddp_utils.py` Contains the main logic to set up the Torch DDP (Distributed Data Parallel).
 - `distillation_utils.py` Logic for distillation loss.
 - `dpo_utils.py` Logic for DPO loss.
 - `hellaswag_utils.py` Contains the main logic to iterate, process and evaluate HellaSwag examples.
-- The files `load_*_dataset.py` download and prepare the dataset to be used for the respective training stage. It loads the dataset via `load_dataset` from the `datasets` HF package.
+- The files `load_*_dataset.py` download and prepare the datasets to be used for the respective training stage. They load the datasets via `load_dataset` from the `datasets` HF package.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
 - `model_utils.py` Contains functionality to manage checkpoints, save and load the model. Also contains a dict print helper.
   - Torch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
   - Weight and Bias [here](https://wandb.ai/site/)
 - `model.py` Implements the custom Llama architecture. Also includes some extra functionality for text generation.
+- `test_prompts.json` JSON with the list of input prompts to try during training. The expected properties in the JSON (as provided in the file) are "pretrain", "instruct", "dpo".
 - `tokenizer.model` Required to load the pretrained tokenizer (unless using HF checkpoint).
 - `tokenizer.py` Uses tiktoken to setup the tokenizer with some changes for encoding / decoding and the special tokens needed. If a checkpoint from HF is provided, it can load a specific tokenizer instead of using the one provided (`tokenizer.model`).
 - `train.py` Main file that contains the logic for the training process.
-- `wnb_utils` A wrapper for Weights and Bias.
+- `wnb_utils` A wrapper for Weights & Biases.
 
 ## Setup
 - Create a python environment. Example with conda: `conda create -n my_env python=3.10.10`;
@@ -71,10 +72,10 @@ The implementation in this project is a bit different but the core ideas are the
     - **NOTE**: Both `load_pretrain_dataset` and `load_instruct_dataset` expect the dataset structure to be in a particular format and should be modified as necessary. (E.g.: If using different datasets). For example the instruct dataset expects the chat format.
     All the target paths can be modified in the .env file. (Check config.py for more details.)
   
-- (OPTIONAL) Setup your Weights and Bias API key:
+- (OPTIONAL) Setup your Weights & Biases API key:
   - Set `WANDB_API_KEY` environment variable if you want to log the progress there.
 
-- **NOTE:** For some scenarios you might need to also pass your HuggingFace API token `HF_TOKEN`. E.g.: If performing knowledge distillation and the teacher model requires access permissions.
+- **NOTE:** For some scenarios you might need to also pass your Hugging Face API token `HF_TOKEN`. E.g.: If performing knowledge distillation and the teacher model requires access permissions.
 
 ## Configuring & Running Training:
 The project expects a `.env` file to be created. Check `.env.example` and use it as a template.
@@ -93,7 +94,7 @@ The file `config.py` defines all the environment variables required.
   --reset-optimizer              # Ignore stored optimizer state
   --start-step <N>               # Override internal step counter
 ```
-  NOTE: The checkpoints `path` need to be set in the `.env` file (check `config.py`)
+  NOTE: The checkpoints paths need to be set in the `.env` file (check `config.py`)
 
 ### Running the Training
 - To train on **Single GPU**, run:
