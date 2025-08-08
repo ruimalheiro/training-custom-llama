@@ -215,11 +215,23 @@ if checkpoint is not None:
 
     if loaded_extra_checkpoint_metadata.get('training_stage', None) != training_stage:
         if is_master_process:
-            print('Training stage has changed, ignoring stored metada for dataset...\n')
+            print('** WARNING: Training stage has chanded **')
         if not args.start_step:
+            if is_master_process:
+                print('ignoring stored start step...')
             start_step = 0
-        loaded_train_loader_state = None
-        loaded_val_loader_state = None
+        if loaded_train_loader_state is not None and loaded_val_loader_state is not None:
+            if is_master_process:
+                print('ignoring stored metada for dataset...')
+            loaded_train_loader_state = None
+            loaded_val_loader_state = None
+        if loaded_optimizer_state is not None:
+            if is_master_process:
+                print('ignoring stored state of optimizer...')
+            loaded_optimizer_state = None
+        if is_master_process:
+            print('\n')
+
     is_lora_checkpoint = loaded_extra_checkpoint_metadata.get('lora_enabled', False)
 
 ########## PREPARE DATA LOADERS ##########
