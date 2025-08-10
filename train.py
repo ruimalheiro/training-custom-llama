@@ -50,7 +50,7 @@ from dpo_utils import (
 )
 
 
-########## CONFIGURATION ##########
+#### CONFIGURATION
 
 # set training stage
 training_stage = config.training_stage
@@ -149,7 +149,7 @@ extra_checkpoint_metadata = {
     'lora_enabled': lora_enabled
 }
 
-########## SCRIPT OPTIONS ##########
+#### SCRIPT OPTIONS
 parser = argparse.ArgumentParser(description='Script options')
 parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
 parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
@@ -159,10 +159,10 @@ parser.add_argument('--start-step', type=int, default=None, help='Starting step 
 
 args = parser.parse_args()
 
-########## INIT DISTRIBUTED DATA PARALLEL (DDP) ##########
+#### INIT DISTRIBUTED DATA PARALLEL (DDP)
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
 
-########## INIT WnB ##########
+#### INIT WnB wrapper
 wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
 wnb.init(wnb_project_name, config={
     'batch_size': model_config.max_batch_size,
@@ -171,7 +171,7 @@ wnb.init(wnb_project_name, config={
     'max_learning_rate': max_lr,
 })
 
-########## LOAD CHECKPOINT ##########
+#### LOAD CHECKPOINT
 load_checkpoints_path = None
 checkpoint = None
 if args.pretrain_checkpoint:
@@ -234,7 +234,7 @@ if checkpoint is not None:
 
     is_lora_checkpoint = loaded_extra_checkpoint_metadata.get('lora_enabled', False)
 
-########## PREPARE DATA LOADERS ##########
+#### INIT DATA LOADERS
 train_loader, val_loader = init_data_loaders(
     batch_size=model_config.max_batch_size,
     sequence_length=model_config.max_seq_len,
@@ -250,7 +250,7 @@ if loaded_train_loader_state is not None and loaded_val_loader_state is not None
     train_loader.load_state_dict(loaded_train_loader_state)
     val_loader.load_state_dict(loaded_val_loader_state)
 
-########## INIT MODEL AND SETUP ##########
+#### INIT MODEL AND TRAINING SETUP
 model = Transformer(model_config)
 
 if checkpoint and loaded_model_state:
@@ -285,7 +285,7 @@ model.to(device)
 
 torch.set_float32_matmul_precision('high')
 
-########## BATCH SIZE ASSERTIONS ##########
+#### BATCH SIZE ASSERTIONS
 
 # NOTE: total_batch_size is the total batch size in tokens. The model max_batch_size is the number of sequences per device during forward pass (micro batches).
 # The total batch size must be a multiple of (max_batch_size * max_seq_len * ddp_world_size). This is needed for the gradient accumulation steps to be calculated correctly.
@@ -297,17 +297,7 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 # Final check to validate previous calculations.
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
 
-#########################################
-
-total_tokens = train_loader.calculate_max_tokens()
-model_params = model.get_parameters_count()
-complete_max_steps = math.ceil(total_tokens / total_batch_size)
-
-# max_steps not set
-if max_steps == -1:
-    max_steps = complete_max_steps
-
-# Init the optimizer
+#### INIT OPTIMIZER
 optimizer = model.configure_adamw_optimizer(
     weight_decay=weight_decay,
     learning_rate=max_lr,
@@ -348,7 +338,12 @@ if is_dpo_training:
         p.requires_grad = False
     print(f'Finished preparing DPO reference model')
 
-########## CONFIG SUMMARY ##########
+#### CONFIG SUMMARY
+
+total_tokens = train_loader.calculate_max_tokens()
+model_params = model.get_parameters_count()
+complete_max_steps = math.ceil(total_tokens / total_batch_size)
+
 if is_master_process:
     current_lr = optimizer.param_groups[0]['lr']
     scheduled_lr = cosine_scheduler(start_step, min_lr, max_lr, warmup_steps, max_steps)
@@ -423,12 +418,16 @@ if is_master_process:
         print('----------------------------------------')
         print_dict(model_config.to_dict())
 
-########## TRAINING ##########
+#### TRAINING LOOP
 if ddp:
     barrier(device_ids=[ddp_local_rank])
 print(f'\nGPU: {ddp_rank} is ready.')
 
 tqdm_label = f'Training ({training_stage.value})'
+
+# max_steps not set
+if max_steps == -1:
+    max_steps = complete_max_steps
 
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)

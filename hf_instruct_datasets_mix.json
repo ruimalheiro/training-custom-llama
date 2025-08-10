@@ -8,11 +8,44 @@
             "transforms": {
                 "max_turns": 8
             }
+        },
+        {
+            "id": "lmsys/lmsys-chat-1m",
+            "name": "default",
+            "split": "train",
+            "weight": 1.0,
+            "transforms": {
+                "max_turns": 8,
+                "placeholders": {
+                    "replace": false,
+                    "random_options": [
+                        "Alex",
+                        "Sam",
+                        "Taylor",
+                        "Jordan",
+                        "Casey",
+                        "Riley",
+                        "Jamie",
+                        "Morgan",
+                        "Avery",
+                        "Quinn",
+                        "Charlie",
+                        "Drew",
+                        "Elliot",
+                        "Rowan",
+                        "Skyler",
+                        "Devon",
+                        "Cameron",
+                        "Robin",
+                        "Sage",
+                        "Reese",
+                        "Peyton",
+                        "Kai",
+                        "Jesse"
+                    ]
+                }
+            }
         }
     ],
-    "output": {
-        "target_path": "datasets/instruct",
-        "shard_prefix": "data"
-    },
     "seed": 42
 }
