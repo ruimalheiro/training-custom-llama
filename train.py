@@ -341,7 +341,7 @@ if is_dpo_training:
 #### CONFIG SUMMARY
 
 total_tokens = train_loader.calculate_max_tokens()
-model_params = model.get_parameters_count()
+model_params = raw_model.get_parameters_count()
 complete_max_steps = math.ceil(total_tokens / total_batch_size)
 
 if is_master_process:

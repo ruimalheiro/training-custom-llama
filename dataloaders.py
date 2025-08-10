@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import random
 import datasets
+import torch.distributed as dist
 
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -29,6 +30,7 @@ class PretrainDataLoader:
         assert split in {'train', 'val'}
         self.split = split
         self.use_shuffle = use_shuffle
+        self.is_master_process = is_master_process
 
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
@@ -48,10 +50,28 @@ class PretrainDataLoader:
         total_tokens += np.load(self.shards[-1]).size
         return int(total_tokens)
 
+    def sync_shuffle_shards(self):
+        if not self.use_shuffle:
+            return
+
+        if self.num_processes <= 1 or not dist.is_available() or not dist.is_initialized():
+            random.shuffle(self.shards)
+            return
+
+        # create the indexes and shuffle
+        target_indexes = list(range(len(self.shards)))
+        if self.is_master_process:
+            random.shuffle(target_indexes)
+
+        # synchronize the shuffle
+        object_list_to_sync = [target_indexes]
+        dist.broadcast_object_list(object_list_to_sync, src=0)
+        order = object_list_to_sync[0]
+        self.shards = [self.shards[i] for i in order]
+
     def reset(self):
         self.current_shard = 0
-        if self.use_shuffle:
-            random.shuffle(self.shards)
+        self.sync_shuffle_shards()
         self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position =  self.B * self.S * self.process_rank
 
@@ -76,6 +96,8 @@ class PretrainDataLoader:
         self.current_position += B * S * self.num_processes
         if self.current_position + (B * S * self.num_processes + 1) > len(self.tokens):
             self.current_shard = (self.current_shard + 1) % len(self.shards)
+            if self.current_shard == 0:
+                self.sync_shuffle_shards()
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = self.B * self.S * self.process_rank
         return x, y
@@ -302,7 +324,7 @@ def init_data_loaders(
             num_processes=num_processes,
             data_root=data_root,
             split='val',
-            use_shuffle=True
+            use_shuffle=False
         )
     elif training_stage == TrainingStage.INSTRUCT:
         assert pad_id is not None
