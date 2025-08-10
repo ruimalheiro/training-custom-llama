@@ -24,13 +24,13 @@ class PretrainDataLoader:
     def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle=False):
         self.B = batch_size
         self.S = sequence_length
+        self.is_master_process = is_master_process
         self.process_rank = process_rank
         self.num_processes = num_processes
         self.data_root = data_root
         assert split in {'train', 'val'}
         self.split = split
         self.use_shuffle = use_shuffle
-        self.is_master_process = is_master_process
 
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
@@ -118,6 +118,9 @@ class InstructDataLoader:
     def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle, pad_id, drop_last):
         self.B = batch_size
         self.S = sequence_length
+        self.is_master_process = is_master_process
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         dataset = datasets.load_from_disk(os.path.join(data_root, split))
         if is_master_process:
@@ -219,6 +222,9 @@ class DirectPreferenceOptimizationDataLoader:
     def __init__(self, batch_size, sequence_length, is_master_process, process_rank, num_processes, data_root, split, use_shuffle, pad_id, drop_last):
         self.B = batch_size
         self.S = sequence_length
+        self.is_master_process = is_master_process
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         dataset = datasets.load_from_disk(os.path.join(data_root, split))
         if is_master_process:
