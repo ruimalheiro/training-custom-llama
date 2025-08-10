@@ -421,7 +421,8 @@ if is_master_process:
 #### TRAINING LOOP
 if ddp:
     barrier(device_ids=[ddp_local_rank])
-print(f'\nGPU: {ddp_rank} is ready.')
+
+print(f'\nGPU: {ddp_local_rank} is ready.')
 
 tqdm_label = f'Training ({training_stage.value})'
 
@@ -432,7 +433,7 @@ if max_steps == -1:
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
 early_stopping_patience_skip_steps += start_step
-for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label):
+for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label, disable=not is_master_process):
     if abort_if_no_improve.item() == 1:
         print(f'Rank {ddp_rank} received stop signal.')
         break
@@ -447,7 +448,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
         dpo_metrics = None
         with torch.no_grad():
-            for _ in tqdm(range(val_steps), 'Validating'):
+            for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process, leave=False):
                 if is_dpo_training:
                     # x, y, z = prompt, chosen, rejected
                     x, y, z = val_loader.next_batch()
@@ -518,7 +519,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         model.eval()
         num_correct_norm = 0
         num_total = 0
-        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples'):
+        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples', disable=not is_master_process, leave=False):
             # if i % ddp_world_size == ddp_rank (gpu itself), process.
             if i % ddp_world_size != ddp_rank:
                 continue

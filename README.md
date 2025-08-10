@@ -46,7 +46,7 @@ The implementation in this project is a bit different but the core ideas are the
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
 - `model_utils.py` Contains functionality to manage checkpoints, save and load the model. Also contains a dict print helper.
   - Torch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
-  - Weight and Bias [here](https://wandb.ai/site/)
+  - Weights & Biases [here](https://wandb.ai/site/)
 - `model.py` Implements the custom Llama architecture. Also includes some extra functionality for text generation.
 - `test_prompts.json` JSON with the list of input prompts to try during training. The expected properties in the JSON (as provided in the file) are "pretrain", "instruct", "dpo".
 - `tokenizer.model` Required to load the pretrained tokenizer (unless using HF checkpoint).
@@ -105,23 +105,43 @@ The file `config.py` defines all the environment variables required.
 
 - To train on **N GPUs** run:
     ```bash
-    export OMP_NUM_THREADS=1 && \
-    torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py
+    export OMP_NUM_THREADS=1
+
+    torchrun \
+      --standalone \
+      --nproc_per_node <NUMBER_OF_GPUs> \
+      train.py
     ```
 
 - To load a checkpoint and continue training, pass the flag to any of the above commands. E.g.:
     ```bash
-    export OMP_NUM_THREADS=1 && \
-    torchrun --standalone --nproc_per_node <NUMBER_OF_GPUs> train.py --pretrain_checkpoint <CHECKPOINT_FILE_NAME>
+    export OMP_NUM_THREADS=1
+
+    torchrun \
+      --standalone \
+      --nproc_per_node <NUMBER_OF_GPUs> \
+      train.py --pretrain_checkpoint <CHECKPOINT_FILE_NAME>
     ```
     - NOTE: When loading an instruct checkpoint, use `--instruct_checkpoint` instead. This will also load the optimizer and the step where it was. You can reset the optimizer with the flag `--reset-optimizer` and set the start step with the flag `--start-step`. E.g.: `--start-step 10`
 
 - To train on multiple nodes **1 or more GPUs**, for each node configure:
     ```bash
-    export OMP_NUM_THREADS=1 && \
-    export MASTER_ADDR=<MASTER NODE MACHINE IP> && \
-    export MASTER_PORT=29500 && \
-    torchrun --nnodes <NUMBER_OF_NODES> --node_rank <NODE_RANK> --nproc_per_node <NUMBER_OF_GPUs> train.py
+    export OMP_NUM_THREADS=1
+    export PYTHONUNBUFFERED=1
+    export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+
+    NNODES=<NUMBER_OF_NODES>
+    NPERNODE=<NUMBER_OF_GPUs>
+    RDZV_EP=<MASTER_NODE_MACHINE_IP>:<MASTER_NODE_MACHINE_PORT>
+    RDZV_ID=<SOME_SHARED_JOB_NAME>
+
+    torchrun \
+      --nnodes ${NNODES} \
+      --nproc-per-node ${NPERNODE} \
+      --rdzv-backend c10d \
+      --rdzv-endpoint ${RDZV_EP} \
+      --rdzv-id ${RDZV_ID} \
+      train.py
     ```
     - More details on torchrun [here](https://pytorch.org/docs/stable/elastic/run.html)
-    - NOTE: The `--standalone` flag must be removed.
+    - **NOTE:** The same command needs to be run on all nodes
