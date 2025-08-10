@@ -46,9 +46,21 @@ class PretrainDataLoader:
         self.reset()
 
     def calculate_max_tokens(self):
-        total_tokens = (len(self.shards) - 1) * 1e8
-        total_tokens += np.load(self.shards[-1]).size
-        return int(total_tokens)
+        def _calculate():
+            total_tokens = (len(self.shards) - 1) * 1e8
+            total_tokens += np.load(self.shards[-1]).size
+            return int(total_tokens)
+
+        if self.num_processes <= 1 or not dist.is_available() or not dist.is_initialized():
+            return _calculate()
+
+        total_tokens = None
+        object_list_to_sync = [total_tokens]
+        if self.is_master_process:
+            object_list_to_sync[0] = _calculate()
+        dist.broadcast_object_list(object_list_to_sync, src=0)
+        total_tokens = int(object_list_to_sync[0])
+        return total_tokens
 
     def sync_shuffle_shards(self):
         if not self.use_shuffle:
@@ -171,12 +183,24 @@ class InstructDataLoader:
         return len(self._dataloader.dataset)
 
     def calculate_max_tokens(self):
-        return sum(self._dataloader.dataset.map(
-            lambda ex: {'len': len(ex['input_ids'])},
-            num_proc=config.number_of_cpu_processes,
-            remove_columns=[],
-            desc='Calculating number of tokens'
-        )['len'])
+        def _calculate():
+            return sum(self._dataloader.dataset.map(
+                lambda ex: {'len': len(ex['input_ids'])},
+                num_proc=config.number_of_cpu_processes,
+                remove_columns=[],
+                desc='Calculating number of tokens'
+            )['len'])
+
+        if self.num_processes <= 1 or not dist.is_available() or not dist.is_initialized():
+            return _calculate()
+
+        total_tokens = None
+        object_list_to_sync = [total_tokens]
+        if self.is_master_process:
+            object_list_to_sync[0] = _calculate()
+        dist.broadcast_object_list(object_list_to_sync, src=0)
+        total_tokens = int(object_list_to_sync[0])
+        return total_tokens
 
     def state_dict(self):
         return {'epoch': getattr(self.sampler, 'epoch', 0)}
@@ -271,12 +295,24 @@ class DirectPreferenceOptimizationDataLoader:
         return len(self._dataloader.dataset)
 
     def calculate_max_tokens(self):
-        return sum(self._dataloader.dataset.map(
-            lambda ex: {'len': len(ex['prompt_input_ids']) + len(ex['chosen_input_ids']) + len(ex['rejected_input_ids'])},
-            num_proc=config.number_of_cpu_processes,
-            remove_columns=[],
-            desc='Calculating number of tokens'
-        )['len'])
+        def _calculate():
+            return sum(self._dataloader.dataset.map(
+                lambda ex: {'len': len(ex['prompt_input_ids']) + len(ex['chosen_input_ids']) + len(ex['rejected_input_ids'])},
+                num_proc=config.number_of_cpu_processes,
+                remove_columns=[],
+                desc='Calculating number of tokens'
+            )['len'])
+
+        if self.num_processes <= 1 or not dist.is_available() or not dist.is_initialized():
+            return _calculate()
+
+        total_tokens = None
+        object_list_to_sync = [total_tokens]
+        if self.is_master_process:
+            object_list_to_sync[0] = _calculate()
+        dist.broadcast_object_list(object_list_to_sync, src=0)
+        total_tokens = int(object_list_to_sync[0])
+        return total_tokens
 
     def state_dict(self):
         return {'epoch': getattr(self.sampler, 'epoch', 0)}
