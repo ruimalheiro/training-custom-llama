@@ -4,6 +4,7 @@ import torch
 import random
 import datasets
 import torch.distributed as dist
+import re
 
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -32,24 +33,36 @@ class PretrainDataLoader:
         self.split = split
         self.use_shuffle = use_shuffle
 
-        shards = os.listdir(data_root)
-        shards = [s for s in shards if split in s]
-        shards = sorted(shards)
-        shards = [os.path.join(data_root, s) for s in shards]
-        self.shards = shards
+        split_root = os.path.join(data_root, split)
+        assert os.path.isdir(split_root), f'missing split dir: {split_root}'
 
-        assert len(self.shards) > 0, f'no shards found in split {split}'
+        target_pattern = re.compile(r'^data_(\d+)\.npy$')
+        valid_shards = []
+        for file_name in os.listdir(split_root):
+            match = target_pattern.match(file_name)
+            if match:
+                valid_shards.append((int(match.group(1)), os.path.join(split_root, file_name)))
+
+        valid_shards.sort(key=lambda x: x[0])
+        indexes = [i for i, _ in valid_shards]
+        assert indexes == list(range(len(valid_shards))), f'Shard sequence is broken: {idxs}'
+
+        self.shards = [shard_path for _, shard_path in valid_shards]
+        assert self.shards, f'no shards found in split {split}'
 
         if is_master_process:
-            print(f'found {len(shards)} shards for split {split}')
+            print(f'found {len(self.shards)} shards for split {split}')
 
         self.reset()
 
     def calculate_max_tokens(self):
         def _calculate():
-            total_tokens = (len(self.shards) - 1) * 1e8
-            total_tokens += np.load(self.shards[-1]).size
-            return int(total_tokens)
+            total = 0
+            for path in self.shards:
+                shard = np.load(path, mmap_mode='r', allow_pickle=False)
+                total += int(shard.shape[0])
+                del shard
+            return total
 
         if self.num_processes <= 1 or not dist.is_available() or not dist.is_initialized():
             return _calculate()

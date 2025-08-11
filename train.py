@@ -448,7 +448,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
         dpo_metrics = None
         with torch.no_grad():
-            for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process, leave=False):
+            for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process):
                 if is_dpo_training:
                     # x, y, z = prompt, chosen, rejected
                     x, y, z = val_loader.next_batch()
@@ -485,7 +485,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         val_ce = (val_loss_sum / val_tok_sum).item()
 
         if is_master_process:
-            print(f'validation loss: {val_ce:.4f}')
+            print(f'\nvalidation loss: {val_ce:.4f}')
             wnb_metrics = {'Validation Loss': val_ce}
             if is_dpo_training:
                 print(dpo_metrics['str'])
@@ -519,7 +519,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
         model.eval()
         num_correct_norm = 0
         num_total = 0
-        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples', disable=not is_master_process, leave=False):
+        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples', disable=not is_master_process):
             # if i % ddp_world_size == ddp_rank (gpu itself), process.
             if i % ddp_world_size != ddp_rank:
                 continue

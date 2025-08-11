@@ -173,6 +173,9 @@ for dataset in valid_datasets:
     name = dataset.get('name', None)
     split = dataset['split']
     transforms = dataset.get('transforms', {})
+
+    shuffle = transforms.get('shuffle', False)
+    max_datapoints = transforms.get('max_datapoints', None)
     max_turns = transforms.get('max_turns', 8)
 
     ds = load_dataset(
@@ -182,7 +185,13 @@ for dataset in valid_datasets:
         cache_dir='./cache',
         num_proc=NUMBER_OF_PROCESSES
     )
-    ds = ds.shuffle(seed=seed)
+
+    if shuffle:
+        ds = ds.shuffle(seed=seed)
+
+    if max_datapoints:
+        max_datapoints = int(max_datapoints)
+        ds = ds.select(range(max_datapoints))
 
     adapter = ADAPTERS_MAP.get(ds_id)
 
@@ -207,9 +216,14 @@ for dataset in valid_datasets:
 mixed_datasets = interleave_datasets(prepared_datasets, probabilities=probabilities, seed=seed)
 
 print('Summary:')
-print({d['id']: len(ds) for d, ds in zip(valid_datasets, prepared_datasets)})
-print('Total len:', len(mixed_datasets), '\n')
+for d, ds in zip(valid_datasets, prepared_datasets):
+    print(f'- Total for: {d["id"]} : {len(ds)}')
 
-train_val = mixed_datasets.train_test_split(test_size=0.01, seed=seed)
-train_val['train'].save_to_disk(os.path.join(config.instruct_dataset_target_path, 'train'))
-train_val['test'] .save_to_disk(os.path.join(config.instruct_dataset_target_path, 'val'))
+print('- Mix total len:', len(mixed_datasets))
+
+splits = mixed_datasets.train_test_split(test_size=0.01, seed=seed)
+
+print('- Train len:', len(splits['train']), ' Val len:', len(splits['test']), '\n')
+
+splits['train'].save_to_disk(os.path.join(config.instruct_dataset_target_path, 'train'))
+splits['test'] .save_to_disk(os.path.join(config.instruct_dataset_target_path, 'val'))

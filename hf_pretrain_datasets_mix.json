@@ -1,0 +1,16 @@
+{
+    "datasets": [
+        {
+            "id": "HuggingFaceFW/fineweb-edu",
+            "name": "sample-10BT",
+            "split": "train",
+            "weight": 1.0,
+            "transforms": {
+                "shuffle": true,
+                "max_datapoints": null
+            }
+        }
+    ],
+    "seed": 42,
+    "shard_size": 100000000
+}

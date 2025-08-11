@@ -9,11 +9,8 @@ class TrainingStage(str, Enum):
 
 class TrainConfig(BaseSettings):
     # datasets_path
-    pretrain_dataset: str = Field(alias='HF_PRETRAIN_DATASET')
-    pretrain_dataset_name: str = Field(default='default', alias='HF_PRETRAIN_DATASET_NAME')
-    pretrain_dataset_split: str = Field(default='train', alias='HF_PRETRAIN_DATASET_SPLIT')
+    pretrain_dataset_mix_file: str = Field(alias='HF_PRETRAIN_DATASET_MIX_FILE')
     pretrain_dataset_target_path: str = Field(alias='HF_PRETRAIN_DATASET_TARGET_PATH')
-    pretrain_dataset_shard_prefix: str = Field(alias='HF_PRETRAIN_DATASET_SHARD_PREFIX')
 
     instruct_dataset_mix_file: str | None = Field(default=None, alias="HF_INSTRUCT_DATASET_MIX_FILE")
     instruct_dataset_target_path: str = Field(alias='HF_INSTRUCT_DATASET_TARGET_PATH')
