@@ -64,7 +64,8 @@ for dataset in valid_datasets:
         name=name,
         split=split,
         cache_dir='./cache',
-        num_proc=NUMBER_OF_PROCESSES
+        num_proc=NUMBER_OF_PROCESSES,
+        token=config.hf_token
     )
 
     if shuffle:

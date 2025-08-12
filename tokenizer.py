@@ -113,7 +113,7 @@ class TikTokenizer(BaseTokenizer):
 class HFTokenizer(BaseTokenizer):
     def __init__(self, path):
         self.num_reserved_special_tokens = 256
-        self.model = AutoTokenizer.from_pretrained(path, cache_dir='./cache')
+        self.model = AutoTokenizer.from_pretrained(path, cache_dir='./cache', token=config.hf_token)
         self.model.model_max_length = int(1e30)
 
         update_tokens = []

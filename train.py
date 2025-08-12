@@ -15,7 +15,7 @@ from transformers import AutoModelForCausalLM
 from lora import apply_lora
 from lr_schedulers import cosine_scheduler
 from distillation_utils import distillation_loss
-from wnb_utils import WnbWrapper
+from wandb_utils import WandbWrapper
 
 from config import (
     config,
@@ -82,9 +82,9 @@ dpo_checkpoints_path = config.dpo_load_checkpoints_path
 # save toggle
 save_checkpoints = config.save_checkpoints
 
-# wnb
-wnb_enabled = config.wnb_enabled
-wnb_project_name = config.wnb_project_name
+# wandb
+wandb_enabled = config.wandb_enabled
+wandb_project_name = config.wandb_project_name
 
 # tokenizer model path
 tokenizer_checkpoint_path = config.tokenizer_checkpoint_path
@@ -162,9 +162,9 @@ args = parser.parse_args()
 #### INIT DISTRIBUTED DATA PARALLEL (DDP)
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
 
-#### INIT WnB wrapper
-wnb = WnbWrapper(enabled=wnb_enabled, is_master_process=is_master_process)
-wnb.init(wnb_project_name, config={
+#### INIT WANDB wrapper
+wandb = WandbWrapper(enabled=wandb_enabled, is_master_process=is_master_process)
+wandb.init(wandb_project_name, config={
     'batch_size': model_config.max_batch_size,
     'sequence_length': model_config.max_seq_len,
     'min_learning_rate': min_lr,
@@ -327,7 +327,7 @@ model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
 teacher_model = None
 if is_model_distillation:
     print(f'Loading teacher model on gpu: {ddp_rank}...')
-    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache').to(device)
+    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache', token=config.hf_token).to(device)
     print(f'Finished loading teacher model on gpu: {ddp_rank}...')
 
 # DPO (Direct Preference Optimization) reference model setup
@@ -360,8 +360,8 @@ if is_master_process:
     if save_checkpoints:
         print(f'saving checkpoint data path: "{save_checkpoints_path}"')
 
-    if wnb_enabled:
-        print(f'weights and biases project name: "{wnb_project_name}"')
+    if wandb_enabled:
+        print(f'weights and biases project name: "{wandb_project_name}"')
 
     print(f'tokenizer loaded from: "{tokenizer_checkpoint_path}"')
 
@@ -486,11 +486,11 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
         if is_master_process:
             print(f'\nvalidation loss: {val_ce:.4f}')
-            wnb_metrics = {'Validation Loss': val_ce}
+            wandb_metrics = {'Validation Loss': val_ce}
             if is_dpo_training:
                 print(dpo_metrics['str'])
-                wnb_metrics.update(dpo_metrics['wnb'])
-            wnb.log(wnb_metrics)
+                wandb_metrics.update(dpo_metrics['wandb'])
+            wandb.log(wandb_metrics)
 
             if val_ce < best_val_loss:
                 best_val_loss = val_ce
@@ -550,7 +550,7 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
         if is_master_process:
             print(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}')
-            wnb.log({'HellaSwag accuracy': acc_norm})
+            wandb.log({'HellaSwag accuracy': acc_norm})
 
     if step > 0 and step % generate_every_x_steps == 0 or last_step:
         model.eval()
@@ -659,14 +659,14 @@ for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_ste
 
     if is_master_process:
         print(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
-        wnb_metrics = {'Train Loss': train_avg_loss}
+        wandb_metrics = {'Train Loss': train_avg_loss}
         if is_dpo_training:
             print(dpo_metrics['str'])
-            wnb_metrics.update(dpo_metrics['wnb'])
-        wnb.log(wnb_metrics)
+            wandb_metrics.update(dpo_metrics['wandb'])
+        wandb.log(wandb_metrics)
 
 if ddp:
     barrier(device_ids=[ddp_local_rank])
     destroy_process_group()
 
-wnb.finish()
+wandb.finish()

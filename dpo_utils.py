@@ -73,7 +73,7 @@ def dpo_loss(
     metrics_s = f'rewards/chosen: {rewards_chosen:4f} | rewards/rejected: {rewards_rejected:4f} | accuracy: {accuracy:4f} | margin: {margin_avg:4f} | pol_logprobs/chosen: {pol_logprobs_pos:4f} | pol_logprobs/rejected: {pol_logprobs_neg:4f}'
     metrics = {
         'str': metrics_s,
-        'wnb': {
+        'wandb': {
             'Rewards/Chosen': rewards_chosen,
             'Rewards/Rejected': rewards_rejected,
             'Accuracy': accuracy,

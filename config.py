@@ -8,6 +8,10 @@ class TrainingStage(str, Enum):
     DPO = 'dpo'
 
 class TrainConfig(BaseSettings):
+    # third party envs
+    wandb_api_key: str | None = Field(default=None, alias='WANDB_API_KEY')
+    hf_token: str | None = Field(default=None, alias='HF_TOKEN')
+
     # datasets_path
     pretrain_dataset_mix_file: str = Field(alias='HF_PRETRAIN_DATASET_MIX_FILE')
     pretrain_dataset_target_path: str = Field(alias='HF_PRETRAIN_DATASET_TARGET_PATH')
@@ -38,9 +42,9 @@ class TrainConfig(BaseSettings):
 
     save_checkpoints: bool = Field(default=False, alias='SAVE_CHECKPOINTS')
 
-    # wnb
-    wnb_enabled: bool = Field(default=False, alias='WNB_ENABLED')
-    wnb_project_name: str = Field(alias='WNB_PROJECT_NAME')
+    # wandb
+    wandb_enabled: bool = Field(default=False, alias='WANDB_ENABLED')
+    wandb_project_name: str = Field(alias='WANDB_PROJECT_NAME')
 
     # tokenizer model path
     tokenizer_checkpoint_path: str = Field(alias='TOKENIZER_CHECKPOINT_PATH')

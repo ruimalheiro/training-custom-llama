@@ -55,7 +55,7 @@ The implementation in this project is a bit different but the core ideas are the
 - `tokenizer.model` Required to load the pretrained tokenizer (unless using HF checkpoint).
 - `tokenizer.py` Uses tiktoken to setup the tokenizer with some changes for encoding / decoding and the special tokens needed. If a checkpoint from HF is provided, it can load a specific tokenizer instead of using the one provided (`tokenizer.model`).
 - `train.py` Main file that contains the logic for the training process.
-- `wnb_utils` A wrapper for Weights & Biases.
+- `wandb_utils` A wrapper for Weights & Biases.
 
 ## Setup
 - Create a python environment. Example with conda: `conda create -n my_env python=3.10.10`;

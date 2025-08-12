@@ -1,16 +1,16 @@
-import os
 import wandb
 
 from datetime import datetime
+from config import config
 
 
-class WnbWrapper():
+class WandbWrapper():
     def __init__(self, enabled=True, is_master_process=True):
         self.WANDB = False
         self.is_master_process = is_master_process
 
         if enabled and self.is_master_process:
-            WANDB_API_KEY = os.getenv('WANDB_API_KEY')
+            WANDB_API_KEY = config.wandb_api_key
             if WANDB_API_KEY is not None:
                 wandb.login(key=WANDB_API_KEY)
                 self.WANDB = True
