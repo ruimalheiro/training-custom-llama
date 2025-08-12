@@ -19,7 +19,8 @@ NUMBER_OF_PROCESSES = get_max_number_of_cpu_processes()
 
 #### SUPPORTED DATASETS
 SUPPORTED_HF_DATASETS = [
-    'HuggingFaceFW/fineweb-edu'
+    'HuggingFaceFW/fineweb-edu',
+    'HuggingFaceTB/smollm-corpus'
 ]
 
 #### ADAPTERS
@@ -27,8 +28,14 @@ def adapt_fineweb_edu(doc, transforms):
     text = doc['text']
     return text
 
+def adapt_smollm_corpus_fineweb_edu_dedup(doc, transforms):
+    text = doc['text']
+    return text
+
 ADAPTERS_MAP = {
-    'HuggingFaceFW/fineweb-edu': adapt_fineweb_edu
+    'HuggingFaceFW/fineweb-edu_sample-10BT': adapt_fineweb_edu,
+    'HuggingFaceFW/fineweb-edu_sample-100BT': adapt_fineweb_edu,
+    'HuggingFaceTB/smollm-corpus_fineweb-edu-dedup': adapt_smollm_corpus_fineweb_edu_dedup
 }
 
 #### VERIFY MIX FILE STRUCTURE
@@ -53,6 +60,9 @@ prepared_datasets = []
 for dataset in valid_datasets:
     ds_id = dataset['id']
     name = dataset.get('name', None)
+
+    adapter_id = f'{ds_id}_{name}' if name and name != 'default' else ds_id
+
     split = dataset['split']
     transforms = dataset.get('transforms', {})
 
@@ -75,7 +85,7 @@ for dataset in valid_datasets:
         max_datapoints = int(max_datapoints)
         ds = ds.select(range(max_datapoints))
 
-    adapter = ADAPTERS_MAP.get(ds_id)
+    adapter = ADAPTERS_MAP.get(adapter_id)
 
     def normalize(doc):
         text = adapter(doc, transforms)

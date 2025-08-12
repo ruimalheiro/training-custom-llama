@@ -141,6 +141,9 @@ prepared_datasets = []
 for dataset in valid_datasets:
     ds_id = dataset['id']
     name = dataset.get('name', None)
+
+    adapter_id = f'{ds_id}_{name}' if name and name != 'default' else ds_id
+
     split = dataset['split']
     transforms = dataset.get('transforms', {})
 
@@ -164,7 +167,7 @@ for dataset in valid_datasets:
         max_datapoints = int(max_datapoints)
         ds = ds.select(range(max_datapoints))
 
-    adapter = ADAPTERS_MAP.get(ds_id)
+    adapter = ADAPTERS_MAP.get(adapter_id)
 
     def normalize(doc):
         conversation = adapter(doc, transforms)

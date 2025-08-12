@@ -9,6 +9,26 @@
                 "shuffle": true,
                 "max_datapoints": null
             }
+        },
+        {
+            "id": "HuggingFaceFW/fineweb-edu",
+            "name": "sample-100BT",
+            "split": "train",
+            "weight": 0.0,
+            "transforms": {
+                "shuffle": true,
+                "max_datapoints": null
+            }
+        },
+        {
+            "id": "HuggingFaceTB/smollm-corpus",
+            "name": "fineweb-edu-dedup",
+            "split": "train",
+            "weight": 0.0,
+            "transforms": {
+                "shuffle": true,
+                "max_datapoints": null
+            }
         }
     ],
     "seed": 42,

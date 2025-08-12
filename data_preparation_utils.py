@@ -48,7 +48,13 @@ def assert_common_structure_and_extract(datasets_mix, supported_datasets):
     assert total_p > 0
     probabilities = [p / total_p for p in probabilities]
 
-    print('Mixture probabilities:', {ds['id']: round(p, 3) for ds, p in zip(valid_datasets, probabilities)}, '\n')
+    def ds_with_name(ds):
+        _id, name = ds['id'], ds.get('name', None)
+        if name and name != 'default':
+            return f'{_id}_{name}'
+        return _id
+
+    print('Mixture probabilities:', [{ds_with_name(ds): round(p, 3)} for ds, p in zip(valid_datasets, probabilities)], '\n')
 
     return seed, valid_datasets, probabilities
 
