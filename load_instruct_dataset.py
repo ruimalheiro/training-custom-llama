@@ -5,10 +5,19 @@ import re
 import random
 import hashlib
 
-from datasets import load_dataset, interleave_datasets
 from tokenizer import init_tokenizer
 from config import config
+from datasets import (
+    load_dataset,
+    interleave_datasets
+)
+from data_preparation_utils import (
+    get_max_number_of_cpu_processes,
+    assert_common_structure_and_extract
+)
 
+
+NUMBER_OF_PROCESSES = get_max_number_of_cpu_processes()
 
 #### AUX
 def stable_hash(text):
@@ -69,42 +78,12 @@ ADAPTERS_MAP = {
     'lmsys/lmsys-chat-1m': adapt_lmsys_chat_1m
 }
 
-#### AUX FUNCTIONS
-def replace_placeholders(conversation, seed):
-    NAME_RE = re.compile(r'\bNAME_(\d+)\b')
-    pass
-
-#### PREPARATION
-tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
-
-NUMBER_OF_PROCESSES = max(1, os.cpu_count() // 2)
-if config.number_of_cpu_processes != 0:
-    NUMBER_OF_PROCESSES = max(1, min(config.number_of_cpu_processes, os.cpu_count()))
-print(f'Number of CPU processes: {NUMBER_OF_PROCESSES}\n')
-
+#### VERIFY MIX FILE STRUCTURE
 datasets_mix = json.load(open(config.instruct_dataset_mix_file))
 
-assert 'datasets' in datasets_mix
-assert 'seed' in datasets_mix
+seed, valid_datasets, probabilities = assert_common_structure_and_extract(datasets_mix, SUPPORTED_HF_DATASETS)
 
-datasets, seed = datasets_mix['datasets'], datasets_mix['seed']
-
-# Validate candidates
-valid_datasets = []
-for dataset in datasets:
-    assert 'id' in dataset
-    assert dataset['id'] in SUPPORTED_HF_DATASETS, dataset['id']
-    assert 'split' in dataset
-    assert 'weight' in dataset
-    assert 0.0 <= float(dataset['weight']) <= 1.0
-
-    # Get the ones with weight > 0, assume 100% default and include. Only ignore if 0.0 is set
-    weight = dataset.get('weight', 1.0)
-    if weight > 0:
-        valid_datasets.append(dataset)
-
-assert valid_datasets, 'No datasets with weight > 0'
-
+#### PREPARATION
 def ensure_user_first(conversation):
     if not conversation:
         return conversation
@@ -116,7 +95,7 @@ def ensure_user_first(conversation):
 def has_assistant_content(conversation):
     return any(message['role'] == 'assistant' and message['content'].strip() for message in conversation)
 
-# pre encoded tokens (that are repeated)
+tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 SYS = tokenizer.encode('system')
 SYS_PROMPT = tokenizer.encode('\n' + config.system_prompt)
 NL = tokenizer.encode('\n')
@@ -157,15 +136,6 @@ def tokenize(doc):
     labels = np.array(labels[1:] + [-100], dtype=np.int32)
 
     return { 'input_ids': input_ids, 'labels': labels }
-
-probabilities = [float(ds['weight']) for ds in valid_datasets]
-
-# normalize probabilities
-total_p = sum(probabilities)
-assert total_p > 0
-probabilities = [p / total_p for p in probabilities]
-
-print('Mixture probabilities:', {ds['id']: round(p, 3) for ds, p in zip(valid_datasets, probabilities)}, '\n')
 
 prepared_datasets = []
 for dataset in valid_datasets:
@@ -227,3 +197,5 @@ print('- Train len:', len(splits['train']), ' Val len:', len(splits['test']), '\
 
 splits['train'].save_to_disk(os.path.join(config.instruct_dataset_target_path, 'train'))
 splits['test'] .save_to_disk(os.path.join(config.instruct_dataset_target_path, 'val'))
+
+print('\nData preparation completed.')

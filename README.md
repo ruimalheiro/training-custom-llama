@@ -44,7 +44,7 @@ The implementation in this project is a bit different but the core ideas are the
   - Each load script have an associated configuration file:
     - `hf_pretrain_datasets_mix.json`
     - `hf_instruct_datasets_mix.json`
-    - `hf_dpo_datasets_mix.json` (TODO)
+    - `hf_dpo_datasets_mix.json`
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
 - `model_utils.py` Contains functionality to manage checkpoints, save and load the model. Also contains a dict print helper.

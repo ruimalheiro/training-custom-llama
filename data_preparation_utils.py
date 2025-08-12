@@ -5,7 +5,52 @@ import numpy as np
 import sys
 
 from tqdm import tqdm
+from config import config
 
+
+def get_max_number_of_cpu_processes():
+    NUMBER_OF_PROCESSES = max(1, os.cpu_count() // 2)
+    if config.number_of_cpu_processes != 0:
+        NUMBER_OF_PROCESSES = max(1, min(config.number_of_cpu_processes, os.cpu_count()))
+    print(f'Number of CPU processes: {NUMBER_OF_PROCESSES}\n')
+    return NUMBER_OF_PROCESSES
+
+def assert_common_structure_and_extract(datasets_mix, supported_datasets):
+    ''' Validates common file structure and extracts seed, valid datasets and probabilities (normalized weight distribution)
+    '''
+    assert 'datasets' in datasets_mix
+    assert 'seed' in datasets_mix
+
+    datasets, seed = datasets_mix['datasets'], datasets_mix['seed']
+
+    assert isinstance(seed, int)
+
+    # Validate candidates
+    valid_datasets = []
+    for dataset in datasets:
+        assert 'id' in dataset
+        assert dataset['id'] in supported_datasets, dataset['id']
+        assert 'split' in dataset
+        assert 'weight' in dataset
+        assert 0.0 <= float(dataset['weight']) <= 1.0
+
+        # Get the ones with weight > 0, assume 100% default and include. Only ignore if 0.0 is set
+        weight = dataset.get('weight', 1.0)
+        if weight > 0:
+            valid_datasets.append(dataset)
+
+    assert valid_datasets, 'No datasets with weight > 0'
+
+    probabilities = [float(ds['weight']) for ds in valid_datasets]
+
+    # normalize probabilities
+    total_p = sum(probabilities)
+    assert total_p > 0
+    probabilities = [p / total_p for p in probabilities]
+
+    print('Mixture probabilities:', {ds['id']: round(p, 3) for ds, p in zip(valid_datasets, probabilities)}, '\n')
+
+    return seed, valid_datasets, probabilities
 
 def get_progress_bar(shard_index, shard_size, initial_tokens=0):
     return tqdm(total=shard_size, initial=initial_tokens, unit='tokens', desc=f'Shard {shard_index}')

@@ -12,14 +12,11 @@ class TrainConfig(BaseSettings):
     pretrain_dataset_mix_file: str = Field(alias='HF_PRETRAIN_DATASET_MIX_FILE')
     pretrain_dataset_target_path: str = Field(alias='HF_PRETRAIN_DATASET_TARGET_PATH')
 
-    instruct_dataset_mix_file: str | None = Field(default=None, alias="HF_INSTRUCT_DATASET_MIX_FILE")
+    instruct_dataset_mix_file: str | None = Field(default=None, alias='HF_INSTRUCT_DATASET_MIX_FILE')
     instruct_dataset_target_path: str = Field(alias='HF_INSTRUCT_DATASET_TARGET_PATH')
 
-    dpo_dataset: str = Field(alias='HF_DPO_DATASET')
-    dpo_dataset_name: str = Field(default='default', alias='HF_DPO_DATASET_NAME')
-    dpo_dataset_split: str = Field(default='train', alias='HF_DPO_DATASET_SPLIT')
+    dpo_dataset_mix_file: str | None = Field(default=None, alias='HF_DPO_DATASET_MIX_FILE')
     dpo_dataset_target_path: str = Field(alias='HF_DPO_DATASET_TARGET_PATH')
-    dpo_dataset_shard_prefix: str = Field(alias='HF_DPO_DATASET_SHARD_PREFIX')
 
     number_of_cpu_processes: int = Field(default=0, alias='NUMBER_OF_CPU_PROCESSES')
 
