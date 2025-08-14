@@ -11,6 +11,7 @@ class TrainConfig(BaseSettings):
     # third party envs
     wandb_api_key: str | None = Field(default=None, alias='WANDB_API_KEY')
     hf_token: str | None = Field(default=None, alias='HF_TOKEN')
+    hf_home: str = Field(default='./cache', alias='HF_HOME')
 
     # datasets_path
     pretrain_dataset_mix_file: str = Field(alias='HF_PRETRAIN_DATASET_MIX_FILE')

@@ -2,8 +2,12 @@ import os
 import numpy as np
 import json
 
-from tokenizer import init_tokenizer
 from config import config
+os.environ['HF_HOME'] = config.hf_home
+os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
+os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
+
+from tokenizer import init_tokenizer
 from datasets import (
     load_dataset,
     interleave_datasets
@@ -73,7 +77,6 @@ for dataset in valid_datasets:
         ds_id,
         name=name,
         split=split,
-        cache_dir='./cache',
         num_proc=NUMBER_OF_PROCESSES,
         token=config.hf_token
     )

@@ -7,6 +7,15 @@ import math
 import copy
 import json
 
+
+from config import (
+    config,
+    TrainingStage
+)
+os.environ['HF_HOME'] = config.hf_home
+os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
+os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
+
 from pathlib import Path
 from tokenizer import init_tokenizer
 from dataloaders import init_data_loaders
@@ -17,10 +26,6 @@ from lr_schedulers import cosine_scheduler
 from distillation_utils import distillation_loss
 from wandb_utils import WandbWrapper
 
-from config import (
-    config,
-    TrainingStage
-)
 from torch.distributed import (
     broadcast,
     barrier,
@@ -327,7 +332,7 @@ model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
 teacher_model = None
 if is_model_distillation:
     print(f'Loading teacher model on gpu: {ddp_rank}...')
-    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, cache_dir='./cache', token=config.hf_token).to(device)
+    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device)
     print(f'Finished loading teacher model on gpu: {ddp_rank}...')
 
 # DPO (Direct Preference Optimization) reference model setup
