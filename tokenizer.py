@@ -1,4 +1,5 @@
 import tiktoken
+import os
 
 from config import config
 os.environ['HF_HOME'] = config.hf_home
