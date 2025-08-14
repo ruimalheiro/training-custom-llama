@@ -13,7 +13,7 @@ class TrainConfig(BaseSettings):
     hf_token: str | None = Field(default=None, alias='HF_TOKEN')
     hf_home: str = Field(default='./cache', alias='HF_HOME')
 
-    # datasets_path
+    # datasets
     pretrain_dataset_mix_file: str = Field(alias='HF_PRETRAIN_DATASET_MIX_FILE')
     pretrain_dataset_target_path: str = Field(alias='HF_PRETRAIN_DATASET_TARGET_PATH')
 
@@ -23,8 +23,15 @@ class TrainConfig(BaseSettings):
     dpo_dataset_mix_file: str | None = Field(default=None, alias='HF_DPO_DATASET_MIX_FILE')
     dpo_dataset_target_path: str = Field(alias='HF_DPO_DATASET_TARGET_PATH')
 
-    number_of_cpu_processes: int = Field(default=0, alias='NUMBER_OF_CPU_PROCESSES')
+    hf_include_source_id: bool = Field(defaulf=False, alias='HF_INCLUDE_SOURCE_ID')
 
+    # processes and batch sizes
+    number_of_cpu_processes: int = Field(default=0, alias='NUMBER_OF_CPU_PROCESSES')
+    mp_pool_chunk_size: int = Field(default=64, alias='MP_POOL_CHUNK_SIZE')
+    hf_map_batch_size: int = Field(default=4096, alias='HF_MAP_BATCH_SIZE')
+    hf_map_writer_batch_size: int = Field(default=1000, alias='HF_MAP_WRITER_BATCH_SIZE')
+
+    # paths for dataloaders
     pretrain_dataloader_root_path: str = Field(alias='PRETRAIN_DATALOADER_ROOT_PATH')
     instruct_dataloader_root_path: str = Field(alias='INSTRUCT_DATALOADER_ROOT_PATH')
     dpo_dataloader_root_path: str = Field(alias='DPO_DATALOADER_ROOT_PATH')

@@ -10,7 +10,10 @@ os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
 from tokenizer import init_tokenizer
 from datasets import (
     load_dataset,
-    interleave_datasets
+    interleave_datasets,
+    Features,
+    Sequence,
+    Value
 )
 from data_preparation_utils import (
     prepare_dataset,
@@ -28,13 +31,13 @@ SUPPORTED_HF_DATASETS = [
 ]
 
 #### ADAPTERS
-def adapt_fineweb_edu(doc, transforms):
-    text = doc['text']
-    return text
+def adapt_fineweb_edu(batch, transforms):
+    text = batch['text']
+    return {'text': batch['text']}
 
-def adapt_smollm_corpus_fineweb_edu_dedup(doc, transforms):
-    text = doc['text']
-    return text
+def adapt_smollm_corpus_fineweb_edu_dedup(batch, transforms):
+    text = batch['text']
+    return {'text': batch['text']}
 
 ADAPTERS_MAP = {
     'HuggingFaceFW/fineweb-edu_sample-10BT': adapt_fineweb_edu,
@@ -55,10 +58,11 @@ seed, valid_datasets, probabilities = assert_common_structure_and_extract(datase
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
 def tokenize(doc):
-    tokens = [tokenizer.eos_id]
-    tokens.extend(tokenizer.encode(doc['text']))
-    tokens_np = np.asarray(tokens, dtype=np.uint32)
-    return { 'input_ids': tokens_np }
+    input_ids = tokenizer.encode(doc['text'])
+    tokens_np = np.empty(len(input_ids) + 1, dtype=np.uint32)
+    tokens_np[0] = tokenizer.eos_id
+    tokens_np[1:] = input_ids
+    return tokens_np
 
 prepared_datasets = []
 for dataset in valid_datasets:
@@ -73,6 +77,12 @@ for dataset in valid_datasets:
     shuffle = transforms.get('shuffle', False)
     max_datapoints = transforms.get('max_datapoints', None)
 
+    if max_datapoints:
+        max_datapoints = int(max_datapoints)
+        assert isinstance(max_datapoints, int)
+        assert max_datapoints > 0
+        split = f'{split}[:{max_datapoints}]'
+
     ds = load_dataset(
         ds_id,
         name=name,
@@ -81,54 +91,75 @@ for dataset in valid_datasets:
         token=config.hf_token
     )
 
+    columns_to_remove = ds.column_names
+
     if shuffle:
         ds = ds.shuffle(seed=seed)
 
-    if max_datapoints:
-        max_datapoints = int(max_datapoints)
-        ds = ds.select(range(max_datapoints))
-
     adapter = ADAPTERS_MAP.get(adapter_id)
+    if adapter is None:
+        raise ValueError(f'No adapter for {adapter_id}')
 
-    def normalize(doc):
-        text = adapter(doc, transforms)
-        return {'text': text, 'source': ds_id}
+    def normalize_and_tokenize(batch):
+        batch = adapter(batch, transforms)
+        texts = batch['text']
+        if config.hf_include_source_id:
+            return {'text': texts, 'source': [ds_id] * len(texts)}
+        return {'text': texts}
 
-    ds = ds.map(normalize, num_proc=NUMBER_OF_PROCESSES)
-    ds = ds.filter(lambda x: len(x['text']) > 0, num_proc=NUMBER_OF_PROCESSES)
+    ds = ds.map(
+        normalize_and_tokenize,
+        batched=True,
+        batch_size=config.hf_map_batch_size,
+        num_proc=NUMBER_OF_PROCESSES,
+        writer_batch_size=config.hf_map_writer_batch_size,
+        remove_columns=columns_to_remove
+    )
 
-    columns_to_remove = [c for c in ds.column_names if c not in ['source']]
-    tokenized_ds = ds.map(tokenize, num_proc=NUMBER_OF_PROCESSES, remove_columns=columns_to_remove)
+    prepared_datasets.append(ds)
 
-    prepared_datasets.append(tokenized_ds)
-
-mixed_datasets = interleave_datasets(prepared_datasets, probabilities=probabilities, seed=seed)
+if len(prepared_datasets) > 1:
+    print('Interleaving datasets... This operation can take a few minutes...')
+    prepared_dataset = interleave_datasets(prepared_datasets, probabilities=probabilities, seed=seed)
+    print('Interleaving datasets complete')
+    print('- Mix total len:', len(prepared_dataset), '\n')
+else:
+    prepared_dataset = prepared_datasets[0]
 
 print('Summary:')
 for d, ds in zip(valid_datasets, prepared_datasets):
     print(f'- Total for: {d["id"]} : {len(ds)}')
 
-print('- Mix total len:', len(mixed_datasets))
 
-splits = mixed_datasets.train_test_split(test_size=0.01, seed=seed)
+splits = prepared_dataset.train_test_split(test_size=0.01, seed=seed)
 
 print('- Train len:', len(splits['train']), ' Val len:', len(splits['test']), '\n')
 
-train_ds = splits['train'].with_format('numpy', columns=['input_ids'])
-val_ds   = splits['test'] .with_format('numpy', columns=['input_ids'])
+train_ds = splits['train'].with_format('python', columns=['text'])
+val_ds   = splits['test'] .with_format('python', columns=['text'])
 
+# Tokenization is being done inside the prepare_dataset. This is because tokenizing with datasets map seems to require a full rewrite of
+# the arrow dataset which can take a lot of time. At this point we just need to tokenize and write the shard (not recreate the arrow dataset).
+print('Preparing train dataset...')
 prepare_dataset(
     dataset=train_ds,
+    tokenize_function=tokenize,
     target_folder=os.path.join(config.pretrain_dataset_target_path, 'train'),
     shard_file_prefix='data',
-    shard_size=shard_size
+    shard_size=shard_size,
+    number_of_processes=NUMBER_OF_PROCESSES,
+    chunksize=config.mp_pool_chunk_size
 )
 
+print('Preparing val dataset...')
 prepare_dataset(
     dataset=val_ds,
+    tokenize_function=tokenize,
     target_folder=os.path.join(config.pretrain_dataset_target_path, 'val'),
     shard_file_prefix='data',
-    shard_size=shard_size
+    shard_size=shard_size,
+    number_of_processes=NUMBER_OF_PROCESSES,
+    chunksize=config.mp_pool_chunk_size
 )
 
 print('\nData preparation completed.')

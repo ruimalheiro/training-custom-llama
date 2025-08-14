@@ -3,6 +3,7 @@ import glob
 import re
 import numpy as np
 import sys
+import multiprocessing as mp
 
 from tqdm import tqdm
 from config import config
@@ -114,12 +115,13 @@ def find_last_shard_info(data_cache_dir, shard_file_prefix):
 def prepare_dataset(
     *,
     dataset,
+    tokenize_function,
     target_folder,
     shard_file_prefix,
-    shard_size
+    shard_size,
+    number_of_processes,
+    chunksize
 ):
-    print(f'\nPreparing dataset:')
-
     data_cache_dir = os.path.join(os.getcwd(), target_folder)
     os.makedirs(data_cache_dir, exist_ok=True)
 
@@ -133,13 +135,13 @@ def prepare_dataset(
         print('Starting skipping phase...')
         skipping_progress_bar = tqdm(total=tokens_to_skip, desc='Skipping tokens', unit='tokens', smoothing=0.1)
 
-    shard_index = start_shard_index
-    token_count = 0
-    progress_bar = None
-    all_tokens_np = np.empty((shard_size,), dtype=np.uint32)
+    with mp.Pool(number_of_processes) as pool:
+        shard_index = start_shard_index
+        token_count = 0
+        progress_bar = None
+        all_tokens_np = np.empty((shard_size,), dtype=np.uint32)
 
-    for batch in dataset.iter(batch_size=2048):
-        for tokens in batch['input_ids']:
+        for tokens in pool.imap(tokenize_function, dataset, chunksize=chunksize):
             if tokens.size == 0:
                 continue
 
@@ -195,7 +197,7 @@ def prepare_dataset(
                 if token_count > 0:
                     progress_bar = get_progress_bar(shard_index, shard_size, initial_tokens=token_count)
 
-    if token_count > 0:
-        if progress_bar:
-            progress_bar.close()
-        save_filename(all_tokens_np[:token_count], shard_index, data_cache_dir, shard_file_prefix)
+        if token_count > 0:
+            if progress_bar:
+                progress_bar.close()
+            save_filename(all_tokens_np[:token_count], shard_index, data_cache_dir, shard_file_prefix)
