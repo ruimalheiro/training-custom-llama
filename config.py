@@ -28,7 +28,7 @@ class TrainConfig(BaseSettings):
     # processes and batch sizes
     number_of_cpu_processes: int = Field(default=0, alias='NUMBER_OF_CPU_PROCESSES')
     mp_pool_chunk_size: int = Field(default=64, alias='MP_POOL_CHUNK_SIZE')
-    hf_map_batch_size: int = Field(default=4096, alias='HF_MAP_BATCH_SIZE')
+    hf_map_batch_size: int = Field(default=1000, alias='HF_MAP_BATCH_SIZE')
     hf_map_writer_batch_size: int = Field(default=1000, alias='HF_MAP_WRITER_BATCH_SIZE')
 
     # paths for dataloaders

@@ -3,7 +3,6 @@ import numpy as np
 import json
 import re
 import random
-import hashlib
 
 from config import config
 os.environ['HF_HOME'] = config.hf_home
@@ -16,17 +15,13 @@ from datasets import (
     interleave_datasets
 )
 from data_preparation_utils import (
+    stable_hash,
     get_max_number_of_cpu_processes,
     assert_common_structure_and_extract
 )
 
 
 NUMBER_OF_PROCESSES = get_max_number_of_cpu_processes()
-
-#### AUX
-def stable_hash(text):
-    # fast and stable hash. More info: https://docs.python.org/3/library/hashlib.html#blake2
-    return int.from_bytes(hashlib.blake2b(text.encode(), digest_size=8).digest(), 'big')
 
 #### SUPPORTED DATASETS
 SUPPORTED_HF_DATASETS = [
@@ -151,7 +146,6 @@ for dataset in valid_datasets:
     split = dataset['split']
     transforms = dataset.get('transforms', {})
 
-    shuffle = transforms.get('shuffle', False)
     max_datapoints = transforms.get('max_datapoints', None)
     max_turns = transforms.get('max_turns', 8)
 
@@ -162,9 +156,6 @@ for dataset in valid_datasets:
         num_proc=NUMBER_OF_PROCESSES,
         token=config.hf_token
     )
-
-    if shuffle:
-        ds = ds.shuffle(seed=seed)
 
     if max_datapoints:
         max_datapoints = int(max_datapoints)

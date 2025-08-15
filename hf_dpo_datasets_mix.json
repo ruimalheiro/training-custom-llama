@@ -6,7 +6,6 @@
             "split": "train",
             "weight": 1.0,
             "transforms": {
-                "shuffle": true,
                 "max_datapoints": null
             }
         }

@@ -6,7 +6,6 @@
             "split": "train",
             "weight": 1.0,
             "transforms": {
-                "shuffle": true,
                 "max_datapoints": null
             }
         },
@@ -16,7 +15,6 @@
             "split": "train",
             "weight": 0.0,
             "transforms": {
-                "shuffle": true,
                 "max_datapoints": null
             }
         },
@@ -26,7 +24,6 @@
             "split": "train",
             "weight": 0.0,
             "transforms": {
-                "shuffle": true,
                 "max_datapoints": null
             }
         }

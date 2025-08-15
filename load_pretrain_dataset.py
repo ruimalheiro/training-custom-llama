@@ -10,12 +10,10 @@ os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
 from tokenizer import init_tokenizer
 from datasets import (
     load_dataset,
-    interleave_datasets,
-    Features,
-    Sequence,
-    Value
+    interleave_datasets
 )
 from data_preparation_utils import (
+    stable_hash,
     prepare_dataset,
     get_max_number_of_cpu_processes,
     assert_common_structure_and_extract
@@ -55,9 +53,12 @@ assert isinstance(shard_size, int)
 seed, valid_datasets, probabilities = assert_common_structure_and_extract(datasets_mix, SUPPORTED_HF_DATASETS)
 
 #### PREPARATION
-tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
+tokenizer = None
 
 def tokenize(doc):
+    global tokenizer
+    if tokenizer is None:
+        tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
     input_ids = tokenizer.encode(doc['text'])
     tokens_np = np.empty(len(input_ids) + 1, dtype=np.uint32)
     tokens_np[0] = tokenizer.eos_id
@@ -74,33 +75,29 @@ for dataset in valid_datasets:
     split = dataset['split']
     transforms = dataset.get('transforms', {})
 
-    shuffle = transforms.get('shuffle', False)
     max_datapoints = transforms.get('max_datapoints', None)
-
-    if max_datapoints:
-        max_datapoints = int(max_datapoints)
-        assert isinstance(max_datapoints, int)
-        assert max_datapoints > 0
-        split = f'{split}[:{max_datapoints}]'
 
     ds = load_dataset(
         ds_id,
         name=name,
         split=split,
-        num_proc=NUMBER_OF_PROCESSES,
+        streaming=True,
         token=config.hf_token
     )
 
     columns_to_remove = ds.column_names
 
-    if shuffle:
-        ds = ds.shuffle(seed=seed)
+    if max_datapoints:
+        max_datapoints = int(max_datapoints)
+        assert isinstance(max_datapoints, int)
+        assert max_datapoints > 0
+        ds = ds.take(max_datapoints)
 
     adapter = ADAPTERS_MAP.get(adapter_id)
     if adapter is None:
         raise ValueError(f'No adapter for {adapter_id}')
 
-    def normalize_and_tokenize(batch):
+    def normalize(batch):
         batch = adapter(batch, transforms)
         texts = batch['text']
         if config.hf_include_source_id:
@@ -108,38 +105,38 @@ for dataset in valid_datasets:
         return {'text': texts}
 
     ds = ds.map(
-        normalize_and_tokenize,
+        normalize,
         batched=True,
         batch_size=config.hf_map_batch_size,
-        num_proc=NUMBER_OF_PROCESSES,
-        writer_batch_size=config.hf_map_writer_batch_size,
         remove_columns=columns_to_remove
     )
 
     prepared_datasets.append(ds)
 
 if len(prepared_datasets) > 1:
-    print('Interleaving datasets... This operation can take a few minutes...')
+    print('Preparing Interleaving iterator... This operation can take a few minutes...')
     prepared_dataset = interleave_datasets(prepared_datasets, probabilities=probabilities, seed=seed)
     print('Interleaving datasets complete')
-    print('- Mix total len:', len(prepared_dataset), '\n')
 else:
     prepared_dataset = prepared_datasets[0]
 
-print('Summary:')
-for d, ds in zip(valid_datasets, prepared_datasets):
-    print(f'- Total for: {d["id"]} : {len(ds)}')
+# Split into train / val iterators. (no train_test_split with stream) The idea here is based in the law of large numbers (assuming we have enough datapoints).
+# We want to draw datapoints and approach the proportions (probs) for train / val so. The hash is to make the assignment deterministic.
+HASH_BYTES = 8
+HASH_SPACE = 1 << (HASH_BYTES * 8) # 64 bit
 
+VAL_FRACTION = 0.01
+SEPARATION_THRESHOLD = int(VAL_FRACTION * HASH_SPACE)
 
-splits = prepared_dataset.train_test_split(test_size=0.01, seed=seed)
+def is_train(ex):
+    return stable_hash(ex['text'], seed=seed, hash_bytes=HASH_BYTES) >= SEPARATION_THRESHOLD
 
-print('- Train len:', len(splits['train']), ' Val len:', len(splits['test']), '\n')
+def is_val(ex):
+    return not is_train(ex)
 
-train_ds = splits['train'].with_format('python', columns=['text'])
-val_ds   = splits['test'] .with_format('python', columns=['text'])
+train_ds = prepared_dataset.filter(is_train)
+val_ds = prepared_dataset.filter(is_val)
 
-# Tokenization is being done inside the prepare_dataset. This is because tokenizing with datasets map seems to require a full rewrite of
-# the arrow dataset which can take a lot of time. At this point we just need to tokenize and write the shard (not recreate the arrow dataset).
 print('Preparing train dataset...')
 prepare_dataset(
     dataset=train_ds,

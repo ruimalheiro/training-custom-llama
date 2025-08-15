@@ -7,7 +7,6 @@
             "weight": 1.0,
             "transforms": {
                 "max_turns": 8,
-                "shuffle": true,
                 "max_datapoints": null
             }
         },
@@ -18,7 +17,6 @@
             "weight": 1.0,
             "transforms": {
                 "max_turns": 8,
-                "shuffle": true,
                 "max_datapoints": null,
                 "placeholders": {
                     "replace": false,

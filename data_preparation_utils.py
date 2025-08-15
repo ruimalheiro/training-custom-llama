@@ -4,10 +4,18 @@ import re
 import numpy as np
 import sys
 import multiprocessing as mp
+import hashlib
 
 from tqdm import tqdm
 from config import config
 
+
+def stable_hash(text, *, seed=None, hash_bytes=8):
+    # fast and stable hash. More info: https://docs.python.org/3/library/hashlib.html#blake2
+    if seed is not None:
+        salt = f'{seed}-salt'.encode('utf-8')
+        return int.from_bytes(hashlib.blake2b(text.encode(), digest_size=8, key=salt).digest(), 'big')
+    return int.from_bytes(hashlib.blake2b(text.encode(), digest_size=8).digest(), 'big')
 
 def get_max_number_of_cpu_processes():
     NUMBER_OF_PROCESSES = max(1, os.cpu_count() // 2)

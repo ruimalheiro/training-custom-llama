@@ -144,7 +144,6 @@ for dataset in valid_datasets:
     split = dataset['split']
     transforms = dataset.get('transforms', {})
 
-    shuffle = transforms.get('shuffle', False)
     max_datapoints = transforms.get('max_datapoints', None)
 
     ds = load_dataset(
@@ -154,9 +153,6 @@ for dataset in valid_datasets:
         num_proc=NUMBER_OF_PROCESSES,
         token=config.hf_token
     )
-
-    if shuffle:
-        ds = ds.shuffle(seed=seed)
 
     if max_datapoints:
         max_datapoints = int(max_datapoints)
