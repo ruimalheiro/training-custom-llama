@@ -128,15 +128,62 @@ The file `config.py` defines all the environment variables required.
     - NOTE: When loading an instruct checkpoint, use `--instruct_checkpoint` instead. This will also load the optimizer and the step where it was. You can reset the optimizer with the flag `--reset-optimizer` and set the start step with the flag `--start-step`. E.g.: `--start-step 10`
 
 - To train on multiple nodes **1 or more GPUs**, for each node configure:
+  - Static
+    - Ethernet
+      ```bash
+      export NCCL_IB_DISABLE=1
+      export NCCL_SOCKET_NTHREADS=4
+      export NCCL_NSOCKS_PERTHREAD=8
+      ```
+    - InfiniBand
+      ```bash
+      export NCCL_IB_DISABLE=0
+      export NCCL_IB_HCA=$(ls /sys/class/infiniband | paste -sd, -)
+      ```
     ```bash
     export OMP_NUM_THREADS=1
     export PYTHONUNBUFFERED=1
     export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+    export TORCH_DIST_BIND_ADDR=0.0.0.0 # only needed in master but no impact on the workers
+    export NCCL_DEBUG=WARN
 
     NNODES=<NUMBER_OF_NODES>
     NPERNODE=<NUMBER_OF_GPUs>
-    RDZV_EP=<MASTER_NODE_MACHINE_IP>:<MASTER_NODE_MACHINE_PORT>
+    NODE_RANK=<NODE_RANK>
+    MASTER_ADDR=<MASTER_NODE_MACHINE_IP>
+    MASTER_PORT=<MASTER_NODE_MACHINE_PORT>
+
+    # make sure we can find the correct NIC
+    _IFACE=$(ip -o route get "$MASTER_ADDR" | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -n "$_IFACE" ] && [ "$_IFACE" != "lo" ] && export NCCL_SOCKET_IFNAME="$_IFACE"
+
+    torchrun \
+      --nnodes ${NNODES} \
+      --nproc-per-node ${NPERNODE} \
+      --node-rank ${NODE_RANK} \
+      --master_addr ${MASTER_ADDR} \
+      --master_port ${MASTER_PORT} \
+      train.py
+    ```  
+  - Elastic 
+    ```bash
+    export OMP_NUM_THREADS=1
+    export PYTHONUNBUFFERED=1
+    export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+    export TORCH_DIST_BIND_ADDR=0.0.0.0 # only needed in master but no impact on the workers
+    export NCCL_DEBUG=WARN
+
+    NNODES=<NUMBER_OF_NODES>
+    NPERNODE=<NUMBER_OF_GPUs>
+    MASTER_ADDR=<MASTER_NODE_MACHINE_IP>
+    MASTER_PORT=<MASTER_NODE_MACHINE_PORT>
+    RDZV_EP="$MASTER_ADDR:$MASTER_PORT"
     RDZV_ID=<SOME_SHARED_JOB_NAME>
+
+    # make sure we can find the correct NIC
+    _IFACE=$(ip -o route get "$MASTER_ADDR" | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -n "$_IFACE" ] && [ "$_IFACE" != "lo" ] && export NCCL_SOCKET_IFNAME="$_IFACE"
+
 
     torchrun \
       --nnodes ${NNODES} \
@@ -146,5 +193,7 @@ The file `config.py` defines all the environment variables required.
       --rdzv-id ${RDZV_ID} \
       train.py
     ```
-    - More details on torchrun [here](https://pytorch.org/docs/stable/elastic/run.html)
-    - **NOTE:** The same command needs to be run on all nodes
+  - **NOTE:** The same command needs to be run on all nodes
+
+- More details on torchrun [here](https://pytorch.org/docs/stable/elastic/run.html)
+- More details on NCCL [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#environment-variables)
