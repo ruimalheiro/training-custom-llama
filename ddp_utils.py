@@ -52,8 +52,19 @@ def init_multi_gpu(seed=None):
 
 
 def prepare_model_for_ddp(model, ddp_local_rank):
+    ''' More details for the following config:
+        https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html
+    '''
     ddp = int(os.environ.get('RANK', -1)) != -1
     if ddp:
-        model = DDP(model, device_ids=[ddp_local_rank])
+        model = DDP(
+            model,
+            device_ids=[ddp_local_rank],
+            broadcast_buffers=False,
+            gradient_as_bucket_view=True,
+            bucket_cap_mb=32,
+            static_graph=True,
+            find_unused_parameters=False
+        )
     raw_model = model.module if ddp else model
     return model, raw_model

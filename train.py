@@ -294,8 +294,10 @@ if lora_enabled and not is_lora_checkpoint:
         is_master_process=is_master_process
     )
 
-model.to(device)
+model.to(device=device, dtype=torch.bfloat16)
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
 
 #### BATCH SIZE ASSERTIONS
@@ -610,7 +612,7 @@ with torch_profiler_context as prof:
             )
 
         model.train()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         t0 = time.time()
         train_loss_local_sum = 0.0
         train_loss_local_token_sum = 0
