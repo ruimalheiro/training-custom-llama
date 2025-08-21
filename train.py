@@ -312,8 +312,11 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 # Final check to validate previous calculations.
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
 
+#### PREPARE DDP
+model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
+
 #### INIT OPTIMIZER
-optimizer = model.configure_adamw_optimizer(
+optimizer = raw_model.configure_adamw_optimizer(
     weight_decay=weight_decay,
     learning_rate=max_lr,
     betas=(0.9, 0.95),
@@ -331,12 +334,13 @@ if loaded_optimizer_state is not None:
             state = optimizer.state[p]
             for k, v in state.items():
                 if torch.is_tensor(v):
-                    state[k] = v.to(device=p.device, dtype=p.dtype)
+                    if k in ('exp_avg', 'exp_avg_sq'):
+                        state[k] = v.to(device=p.device, dtype=torch.float32) # keep moments in fp32
+                    else:
+                        state[k] = v.to(device=p.device, dtype=p.dtype)
 
     if is_master_process:
         print('optimizer state loaded and ready')
-
-model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
 
 # Model distillation setup
 teacher_model = None
@@ -348,7 +352,7 @@ if is_model_distillation:
 # DPO (Direct Preference Optimization) reference model setup
 if is_dpo_training:
     print(f'Preparing DPO reference model...')
-    dpo_ref_model = copy.deepcopy(model).eval().to(device)
+    dpo_ref_model = copy.deepcopy(raw_model).eval().to(device, dtype=torch.bfloat16)
     for p in dpo_ref_model.parameters():
         p.requires_grad = False
     print(f'Finished preparing DPO reference model')
@@ -500,7 +504,7 @@ with torch_profiler_context as prof:
                     if is_dpo_training:
                         # x, y, z = prompt, chosen, rejected
                         x, y, z = val_loader.next_batch()
-                        x, y, z = x.to(device), y.to(device), z.to(device)
+                        x, y, z = x.to(device, non_blocking=True), y.to(device, non_blocking=True), z.to(device, non_blocking=True)
 
                         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                             policy_log_probs_pos = dpo_log_probs(model, x, y)
@@ -518,7 +522,7 @@ with torch_profiler_context as prof:
                         n_valid = torch.tensor(x.size(0), device=device) # Assume 1 valid example as the entire triple.
                     else:
                         x, y = val_loader.next_batch()
-                        x, y = x.to(device), y.to(device)
+                        x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
                         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                             loss = model(x, labels=y)['loss']
 
@@ -613,16 +617,19 @@ with torch_profiler_context as prof:
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        t0 = time.time()
-        train_loss_local_sum = 0.0
-        train_loss_local_token_sum = 0
-        train_local_token_sum = 0
+        train_loss_local_sum = torch.tensor(0.0, device=device)
+        train_loss_local_token_sum = torch.tensor(0.0, device=device)
+        train_local_token_sum = torch.tensor(0.0, device=device)
         dpo_metrics = None
+        t0 = torch.cuda.Event(enable_timing=True)
+        t1 = torch.cuda.Event(enable_timing=True)
+
+        t0.record()
         for micro_step in range(grad_accum_steps):
             if is_dpo_training:
                 # x, y, z = prompt, chosen, rejected
                 x, y, z = train_loader.next_batch()
-                x, y, z = x.to(device), y.to(device), z.to(device)
+                x, y, z = x.to(device, non_blocking=True), y.to(device, non_blocking=True), z.to(device, non_blocking=True)
 
                 train_local_token_sum += 4 * x.numel() + 2 * y.numel() + 2 * z.numel()
 
@@ -648,7 +655,7 @@ with torch_profiler_context as prof:
                 n_valid = x.size(0) # Assume 1 valid example as the entire triple.
             else:
                 x, y = train_loader.next_batch()
-                x, y = x.to(device), y.to(device)
+                x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
                 train_local_token_sum += x.numel()
 
@@ -667,9 +674,12 @@ with torch_profiler_context as prof:
                     loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
                     loss_scaled += loss_distil / grad_accum_steps
 
-                n_valid = (y != -100).sum().item()
+                n_valid = (y != -100).sum()
 
-            train_loss_local_sum += loss.item() * n_valid
+            if not torch.is_tensor(n_valid):
+                n_valid = torch.tensor(n_valid, device=device, dtype=loss.dtype)
+
+            train_loss_local_sum += loss.detach() * n_valid
             train_loss_local_token_sum  += n_valid
 
             if ddp:
@@ -682,12 +692,14 @@ with torch_profiler_context as prof:
         train_token_sum = train_local_token_sum
 
         if ddp:
-            reduce_vec = torch.tensor([train_loss_local_sum, train_loss_local_token_sum, train_token_sum], device=device, dtype=torch.float64)
+            reduce_vec = torch.stack([
+                train_loss_local_sum.float(),
+                train_loss_local_token_sum.float(),
+                train_token_sum.float()
+            ])
             dist.all_reduce(reduce_vec, op=dist.ReduceOp.SUM)
 
-            train_loss_sum = float(reduce_vec[0].item())
-            train_loss_token_sum = float(reduce_vec[1].item())
-            train_token_sum = float(reduce_vec[2].item())
+            train_loss_sum, train_loss_token_sum, train_token_sum = reduce_vec.tolist()
 
         train_avg_loss = train_loss_sum / train_loss_token_sum
 
@@ -699,10 +711,9 @@ with torch_profiler_context as prof:
 
         optimizer.step()
 
-        torch.cuda.synchronize()
-
-        t1 = time.time()
-        dt = (t1 - t0)
+        t1.record()
+        t1.synchronize()
+        dt = t0.elapsed_time(t1) / 1000.0
         tokens_per_sec = train_token_sum / dt
 
         if is_master_process:

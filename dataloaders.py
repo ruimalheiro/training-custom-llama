@@ -16,9 +16,10 @@ from config import (
 
 
 def load_tokens(filename):
-    npt = np.load(filename)
-    npt = npt.astype(np.int32)
-    ptt = torch.tensor(npt, dtype=torch.long)
+    npt = np.load(filename, allow_pickle=False)
+    if npt.dtype != np.int64:
+        npt = npt.astype(np.int64)
+    ptt = torch.from_numpy(npt)
     return ptt
 
 class PretrainDataLoader:
@@ -45,7 +46,7 @@ class PretrainDataLoader:
 
         valid_shards.sort(key=lambda x: x[0])
         indexes = [i for i, _ in valid_shards]
-        assert indexes == list(range(len(valid_shards))), f'Shard sequence is broken: {idxs}'
+        assert indexes == list(range(len(valid_shards))), f'Shard sequence is broken: {indexes}'
 
         self.shards = [shard_path for _, shard_path in valid_shards]
         assert self.shards, f'no shards found in split {split}'
@@ -98,19 +99,23 @@ class PretrainDataLoader:
         self.current_shard = 0
         self.sync_shuffle_shards()
         self.tokens = load_tokens(self.shards[self.current_shard])
-        self.current_position =  self.B * self.S * self.process_rank
+        if torch.cuda.is_available():
+            self.tokens = self.tokens.pin_memory()
+        self.current_position = self.B * self.S * self.process_rank
 
     def state_dict(self):
         return {
-            'shards'          : list(self.shards),
-            'current_shard'   : self.current_shard,
-            'current_position': self.current_position,
+            'shards' : list(self.shards),
+            'current_shard' : self.current_shard,
+            'current_position' : self.current_position
         }
 
     def load_state_dict(self, state):
-        self.shards         = state['shards']
-        self.current_shard  = state['current_shard']
-        self.tokens         = load_tokens(self.shards[self.current_shard])
+        self.shards = state['shards']
+        self.current_shard = state['current_shard']
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        if torch.cuda.is_available():
+            self.tokens = self.tokens.pin_memory()
         self.current_position = state['current_position']
 
     def next_batch(self):
@@ -124,6 +129,8 @@ class PretrainDataLoader:
             if self.current_shard == 0:
                 self.sync_shuffle_shards()
             self.tokens = load_tokens(self.shards[self.current_shard])
+            if torch.cuda.is_available():
+                self.tokens = self.tokens.pin_memory()
             self.current_position = self.B * self.S * self.process_rank
         return x, y
 

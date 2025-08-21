@@ -5,6 +5,8 @@ from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 
+os.environ.setdefault('NCCL_ASYNC_ERROR_HANDLING', '1')
+
 def init_multi_gpu(seed=None):
     ddp = int(os.environ.get('RANK', -1)) != -1
     if ddp:
