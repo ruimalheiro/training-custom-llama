@@ -26,7 +26,14 @@ from lora import apply_lora
 from lr_schedulers import cosine_scheduler
 from distillation_utils import distillation_loss
 from wandb_utils import WandbWrapper
+from contextlib import nullcontext
 
+from torch.profiler import (
+    profile,
+    ProfilerActivity,
+    schedule,
+    tensorboard_trace_handler
+)
 from torch.distributed import (
     broadcast,
     barrier,
@@ -439,237 +446,273 @@ if max_steps == -1:
 epochs_no_improve = 0
 abort_if_no_improve = torch.tensor([0], device=device)
 early_stopping_patience_skip_steps += start_step
-for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label, disable=not is_master_process):
-    if abort_if_no_improve.item() == 1:
-        print(f'Rank {ddp_rank} received stop signal.')
-        break
 
-    last_step = (step == max_steps - 1)
+def trace_handler(prof):
+    if config.torch_profiler_tensorboard_enabled:
+        tensor_board = tensorboard_trace_handler(
+            dir_name=config.torch_profiler_tensorboard_log_path,
+            worker_name='rank0' if is_master_process else None,
+        )
+        tensor_board(prof)
+    else:
+        print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10)) # TODO can be configured.
 
-    if step > 0 and step % validate_every_x_steps == 0 or last_step:
-        model.eval()
+torch_profiler_enabled = config.torch_profiler_enabled and is_master_process
+if torch_profiler_enabled:
+    print('\nWARN: Torch profiler is enabled!\n')
+torch_profiler_context = (
+    profile(
+        activities=[
+            ProfilerActivity.CPU,
+            ProfilerActivity.CUDA
+        ],
+        record_shapes=True,
+        profile_memory=True,
+        schedule=schedule(
+            skip_first=config.torch_profiler_schedule_skip_first,
+            wait=config.torch_profiler_schedule_wait,
+            warmup=config.torch_profiler_schedule_warmup,
+            active=config.torch_profiler_schedule_active,
+            repeat=config.torch_profiler_schedule_repeat
+        ),
+        on_trace_ready=trace_handler
+    ) if torch_profiler_enabled else nullcontext()
+)
+with torch_profiler_context as prof:
+    for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label, disable=not is_master_process):
+        if abort_if_no_improve.item() == 1:
+            print(f'Rank {ddp_rank} received stop signal.')
+            break
 
-        val_loss_sum = torch.tensor(0.0, device=device)
-        val_tok_sum = torch.tensor(0.0, device=device)
+        last_step = (step == max_steps - 1)
 
-        dpo_metrics = None
-        with torch.no_grad():
-            for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process):
+        if step > 0 and step % validate_every_x_steps == 0 or last_step:
+            model.eval()
+
+            val_loss_sum = torch.tensor(0.0, device=device)
+            val_tok_sum = torch.tensor(0.0, device=device)
+
+            dpo_metrics = None
+            with torch.no_grad():
+                for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process):
+                    if is_dpo_training:
+                        # x, y, z = prompt, chosen, rejected
+                        x, y, z = val_loader.next_batch()
+                        x, y, z = x.to(device), y.to(device), z.to(device)
+
+                        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                            policy_log_probs_pos = dpo_log_probs(model, x, y)
+                            policy_log_probs_neg = dpo_log_probs(model, x, z)
+                            reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
+                            reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
+
+                        loss, dpo_metrics = dpo_loss(
+                            policy_log_probs_pos,
+                            policy_log_probs_neg,
+                            reference_log_probs_pos,
+                            reference_log_probs_neg,
+                            dpo_beta
+                        )
+                        n_valid = torch.tensor(x.size(0), device=device) # Assume 1 valid example as the entire triple.
+                    else:
+                        x, y = val_loader.next_batch()
+                        x, y = x.to(device), y.to(device)
+                        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                            loss = model(x, labels=y)['loss']
+
+                        n_valid = (y != -100).sum().float()
+                    val_loss_sum += loss * n_valid
+                    val_tok_sum += n_valid
+
+            if ddp:
+                dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
+                dist.all_reduce(val_tok_sum, op=dist.ReduceOp.SUM)
+
+            val_ce = (val_loss_sum / val_tok_sum).item()
+
+            if is_master_process:
+                print(f'\nvalidation loss: {val_ce:.4f}')
+                wandb_metrics = {'Validation Loss': val_ce}
                 if is_dpo_training:
-                    # x, y, z = prompt, chosen, rejected
-                    x, y, z = val_loader.next_batch()
-                    x, y, z = x.to(device), y.to(device), z.to(device)
+                    print(dpo_metrics['str'])
+                    wandb_metrics.update(dpo_metrics['wandb'])
+                wandb.log(wandb_metrics)
 
+                if val_ce < best_val_loss:
+                    best_val_loss = val_ce
+                    epochs_no_improve = 0
+
+                    if save_checkpoints is True:
+                        save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader, extra_checkpoint_metadata)
+                else:
+                    if step > early_stopping_patience_skip_steps:
+                        epochs_no_improve += 1
+                        print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}')
+                    else:
+                        print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}')
+
+                    print('Skipping save checkpoint...')
+
+                stop_signal = torch.tensor([0], device=device)
+                if epochs_no_improve == early_stopping_patience:
+                    print(f'The validation loss did not improve for: {early_stopping_patience} - Aborting training...')
+                    abort_if_no_improve[0] = 1
+
+            if ddp:
+                broadcast(abort_if_no_improve, src=0)
+
+        if is_pretraining and (step > 0 and step % hellaswag_every_x_steps == 0 or last_step):
+            model.eval()
+            num_correct_norm = 0
+            num_total = 0
+            for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples', disable=not is_master_process):
+                # if i % ddp_world_size == ddp_rank (gpu itself), process.
+                if i % ddp_world_size != ddp_rank:
+                    continue
+
+                _, tokens, mask, label = prepare_hellaswag_example(example, tokenizer)
+                tokens = tokens.to(device)
+                mask = mask.to(device)
+
+                # get the logits
+                with torch.no_grad():
                     with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                        policy_log_probs_pos = dpo_log_probs(model, x, y)
-                        policy_log_probs_neg = dpo_log_probs(model, x, z)
+                        logits = model(tokens)
+
+                    predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
+
+                num_total += 1
+                num_correct_norm += int(predicted_correct == label)
+
+            # Aggregates counts across all GPU processes (in DDP) to compute global accuracy.
+            if ddp:
+                num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+                num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+                dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+                dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+                num_total = num_total.item()
+                num_correct_norm = num_correct_norm.item()
+            acc_norm = num_correct_norm / num_total
+
+            if is_master_process:
+                print(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}')
+                wandb.log({'HellaSwag accuracy': acc_norm})
+
+        if step > 0 and step % generate_every_x_steps == 0 or last_step:
+            model.eval()
+            raw_model.test_dialogue_custom(
+                test_generation_prompts,
+                max_gen_len=max_test_gen_len,
+                device=device,
+                is_instruct=is_instruct_training,
+                temperature=0.0,
+                top_p=1.0
+            )
+
+        model.train()
+        optimizer.zero_grad()
+        t0 = time.time()
+        train_loss_local_sum = 0.0
+        train_loss_local_token_sum = 0
+        train_local_token_sum = 0
+        dpo_metrics = None
+        for micro_step in range(grad_accum_steps):
+            if is_dpo_training:
+                # x, y, z = prompt, chosen, rejected
+                x, y, z = train_loader.next_batch()
+                x, y, z = x.to(device), y.to(device), z.to(device)
+
+                train_local_token_sum += 4 * x.numel() + 2 * y.numel() + 2 * z.numel()
+
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    policy_log_probs_pos = dpo_log_probs(model, x, y)
+                    policy_log_probs_neg = dpo_log_probs(model, x, z)
+
+                with torch.no_grad():
+                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                         reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
                         reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
 
-                    loss, dpo_metrics = dpo_loss(
-                        policy_log_probs_pos,
-                        policy_log_probs_neg,
-                        reference_log_probs_pos,
-                        reference_log_probs_neg,
-                        dpo_beta
-                    )
-                    n_valid = torch.tensor(x.size(0), device=device) # Assume 1 valid example as the entire triple.
-                else:
-                    x, y = val_loader.next_batch()
-                    x, y = x.to(device), y.to(device)
-                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                        loss = model(x, labels=y)['loss']
+                loss, dpo_metrics = dpo_loss(
+                    policy_log_probs_pos,
+                    policy_log_probs_neg,
+                    reference_log_probs_pos,
+                    reference_log_probs_neg,
+                    dpo_beta
+                )
 
-                    n_valid = (y != -100).sum().float()
-                val_loss_sum += loss * n_valid
-                val_tok_sum += n_valid
+                loss_scaled = loss / grad_accum_steps
+
+                n_valid = x.size(0) # Assume 1 valid example as the entire triple.
+            else:
+                x, y = train_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+
+                train_local_token_sum += x.numel()
+
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    result = model(x, labels=y)
+                    loss = result['loss']
+
+                loss_scaled = loss / grad_accum_steps
+                if is_model_distillation and teacher_model:
+                    train_local_token_sum += x.numel()
+
+                    with torch.no_grad():
+                        # NOTE: The vocabularies must match otherwise there will be an error.
+                        teacher_logits = teacher_model(input_ids=x).logits
+
+                    loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
+                    loss_scaled += loss_distil / grad_accum_steps
+
+                n_valid = (y != -100).sum().item()
+
+            train_loss_local_sum += loss.item() * n_valid
+            train_loss_local_token_sum  += n_valid
+
+            if ddp:
+                model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
+
+            loss_scaled.backward()
+
+        train_loss_sum = train_loss_local_sum
+        train_loss_token_sum = train_loss_local_token_sum
+        train_token_sum = train_local_token_sum
 
         if ddp:
-            dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
-            dist.all_reduce(val_tok_sum, op=dist.ReduceOp.SUM)
+            reduce_vec = torch.tensor([train_loss_local_sum, train_loss_local_token_sum, train_token_sum], device=device, dtype=torch.float64)
+            dist.all_reduce(reduce_vec, op=dist.ReduceOp.SUM)
 
-        val_ce = (val_loss_sum / val_tok_sum).item()
+            train_loss_sum = float(reduce_vec[0].item())
+            train_loss_token_sum = float(reduce_vec[1].item())
+            train_token_sum = float(reduce_vec[2].item())
+
+        train_avg_loss = train_loss_sum / train_loss_token_sum
+
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        lr = cosine_scheduler(step, min_lr, max_lr, warmup_steps, max_steps)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
+        optimizer.step()
+
+        torch.cuda.synchronize()
+
+        t1 = time.time()
+        dt = (t1 - t0)
+        tokens_per_sec = train_token_sum / dt
 
         if is_master_process:
-            print(f'\nvalidation loss: {val_ce:.4f}')
-            wandb_metrics = {'Validation Loss': val_ce}
+            print(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
+            wandb_metrics = {'Train Loss': train_avg_loss}
             if is_dpo_training:
                 print(dpo_metrics['str'])
                 wandb_metrics.update(dpo_metrics['wandb'])
             wandb.log(wandb_metrics)
 
-            if val_ce < best_val_loss:
-                best_val_loss = val_ce
-                epochs_no_improve = 0
-
-                if save_checkpoints is True:
-                    save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader, extra_checkpoint_metadata)
-            else:
-                if step > early_stopping_patience_skip_steps:
-                    epochs_no_improve += 1
-                    print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}')
-                else:
-                    print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}')
-
-                print('Skipping save checkpoint...')
-
-            stop_signal = torch.tensor([0], device=device)
-            if epochs_no_improve == early_stopping_patience:
-                print(f'The validation loss did not improve for: {early_stopping_patience} - Aborting training...')
-                abort_if_no_improve[0] = 1
-
-        if ddp:
-            broadcast(abort_if_no_improve, src=0)
-
-    if is_pretraining and (step > 0 and step % hellaswag_every_x_steps == 0 or last_step):
-        model.eval()
-        num_correct_norm = 0
-        num_total = 0
-        for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples', disable=not is_master_process):
-            # if i % ddp_world_size == ddp_rank (gpu itself), process.
-            if i % ddp_world_size != ddp_rank:
-                continue
-
-            _, tokens, mask, label = prepare_hellaswag_example(example, tokenizer)
-            tokens = tokens.to(device)
-            mask = mask.to(device)
-
-            # get the logits
-            with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    logits = model(tokens)
-                    
-                predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
-
-            num_total += 1
-            num_correct_norm += int(predicted_correct == label)
-
-        # Aggregates counts across all GPU processes (in DDP) to compute global accuracy.
-        if ddp:
-            num_total = torch.tensor(num_total, dtype=torch.long, device=device)
-            num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
-            dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
-            dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
-            num_total = num_total.item()
-            num_correct_norm = num_correct_norm.item()
-        acc_norm = num_correct_norm / num_total
-
-        if is_master_process:
-            print(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}')
-            wandb.log({'HellaSwag accuracy': acc_norm})
-
-    if step > 0 and step % generate_every_x_steps == 0 or last_step:
-        model.eval()
-        raw_model.test_dialogue_custom(
-            test_generation_prompts,
-            max_gen_len=max_test_gen_len,
-            device=device,
-            is_instruct=is_instruct_training,
-            temperature=0.0,
-            top_p=1.0
-        )
-
-    model.train()
-    optimizer.zero_grad()
-    t0 = time.time()
-    train_loss_local_sum = 0.0
-    train_loss_local_token_sum = 0
-    train_local_token_sum = 0
-    dpo_metrics = None
-    for micro_step in range(grad_accum_steps):
-        if is_dpo_training:
-            # x, y, z = prompt, chosen, rejected
-            x, y, z = train_loader.next_batch()
-            x, y, z = x.to(device), y.to(device), z.to(device)
-
-            train_local_token_sum += 4 * x.numel() + 2 * y.numel() + 2 * z.numel()
-
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                policy_log_probs_pos = dpo_log_probs(model, x, y)
-                policy_log_probs_neg = dpo_log_probs(model, x, z)
-
-            with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
-                    reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
-
-            loss, dpo_metrics = dpo_loss(
-                policy_log_probs_pos,
-                policy_log_probs_neg,
-                reference_log_probs_pos,
-                reference_log_probs_neg,
-                dpo_beta
-            )
-
-            loss_scaled = loss / grad_accum_steps
-
-            n_valid = x.size(0) # Assume 1 valid example as the entire triple.
-        else:
-            x, y = train_loader.next_batch()
-            x, y = x.to(device), y.to(device)
-
-            train_local_token_sum += x.numel()
-
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                result = model(x, labels=y)
-                loss = result['loss']
-
-            loss_scaled = loss / grad_accum_steps
-            if is_model_distillation and teacher_model:
-                train_local_token_sum += x.numel()
-
-                with torch.no_grad():
-                    # NOTE: The vocabularies must match otherwise there will be an error.
-                    teacher_logits = teacher_model(input_ids=x).logits
-
-                loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
-                loss_scaled += loss_distil / grad_accum_steps
-
-            n_valid = (y != -100).sum().item()
-
-        train_loss_local_sum += loss.item() * n_valid
-        train_loss_local_token_sum  += n_valid
-
-        if ddp:
-            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-
-        loss_scaled.backward()
-
-    train_loss_sum = train_loss_local_sum
-    train_loss_token_sum = train_loss_local_token_sum
-    train_token_sum = train_local_token_sum
-
-    if ddp:
-        reduce_vec = torch.tensor([train_loss_local_sum, train_loss_local_token_sum, train_token_sum], device=device, dtype=torch.float64)
-        dist.all_reduce(reduce_vec, op=dist.ReduceOp.SUM)
-
-        train_loss_sum = float(reduce_vec[0].item())
-        train_loss_token_sum = float(reduce_vec[1].item())
-        train_token_sum = float(reduce_vec[2].item())
-
-    train_avg_loss = train_loss_sum / train_loss_token_sum
-
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-    lr = cosine_scheduler(step, min_lr, max_lr, warmup_steps, max_steps)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-    optimizer.step()
-
-    torch.cuda.synchronize()
-
-    t1 = time.time()
-    dt = (t1 - t0)
-    tokens_per_sec = train_token_sum / dt
-
-    if is_master_process:
-        print(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
-        wandb_metrics = {'Train Loss': train_avg_loss}
-        if is_dpo_training:
-            print(dpo_metrics['str'])
-            wandb_metrics.update(dpo_metrics['wandb'])
-        wandb.log(wandb_metrics)
+        if torch_profiler_enabled:
+            prof.step()
 
 if ddp:
     barrier(device_ids=[ddp_local_rank])

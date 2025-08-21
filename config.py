@@ -31,6 +31,16 @@ class TrainConfig(BaseSettings):
     hf_map_batch_size: int = Field(default=1000, alias='HF_MAP_BATCH_SIZE')
     hf_map_writer_batch_size: int = Field(default=1000, alias='HF_MAP_WRITER_BATCH_SIZE')
 
+    # torch profiler
+    torch_profiler_enabled: bool = Field(default=False, alias='TORCH_PROFILER_ENABLED')
+    torch_profiler_schedule_skip_first: int = Field(default=0, alias='TORCH_PROFILER_SCHEDULE_SKIP_FIRST')
+    torch_profiler_schedule_wait: int = Field(default=1, alias='TORCH_PROFILER_SCHEDULE_WAIT')
+    torch_profiler_schedule_warmup: int = Field(default=1, alias='TORCH_PROFILER_SCHEDULE_WARMUP')
+    torch_profiler_schedule_active: int = Field(default=1, alias='TORCH_PROFILER_SCHEDULE_ACTIVE')
+    torch_profiler_schedule_repeat: int = Field(default=0, alias='TORCH_PROFILER_SCHEDULE_REPEAT')
+    torch_profiler_tensorboard_enabled: bool = Field(default=False, alias='TORCH_PROFILER_TENSORBOARD_ENABLED')
+    torch_profiler_tensorboard_log_path: str = Field(alias='TORCH_PROFILER_TENSORBOARD_LOG_PATH')
+
     # paths for dataloaders
     pretrain_dataloader_root_path: str = Field(alias='PRETRAIN_DATALOADER_ROOT_PATH')
     instruct_dataloader_root_path: str = Field(alias='INSTRUCT_DATALOADER_ROOT_PATH')

@@ -8,3 +8,5 @@ pydantic
 pydantic-settings
 torch
 tqdm
+tensorboard
+torch-tb-profiler

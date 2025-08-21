@@ -31,6 +31,7 @@ The implementation in this project is a bit different but the core ideas are the
 - HellaSwag for extra validation
 - LoRA configuration
 - Direct Preference Optimization (DPO)
+- Torch profiler
 
 ## Instructions
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
@@ -197,3 +198,11 @@ The file `config.py` defines all the environment variables required.
 
 - More details on torchrun [here](https://pytorch.org/docs/stable/elastic/run.html)
 - More details on NCCL [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#environment-variables)
+
+## Using torch profiler
+Details on the environment variables suggested in `.env.example` can be found [here](https://docs.pytorch.org/tutorials/recipes/recipes/profiler_recipe.html).
+
+If using tensorboard, in a different shell start:
+```bash
+tensorboard --logdir <LOG_PATH> --bind_all
+```
