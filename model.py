@@ -109,7 +109,13 @@ class Attention(nn.Module):
         # output = torch.matmul(scores, values)
 
         # Torch scaled_dot_product_attention will use flash-attention if possible.
-        output = F.scaled_dot_product_attention(xq, keys, values, scale=(1 / math.sqrt(self.head_dim)), attn_mask=mask)
+        output = F.scaled_dot_product_attention(
+            xq,
+            keys,
+            values,
+            attn_mask=mask,
+            is_causal=True
+        )
 
         output = output.transpose(1, 2).contiguous().view(batch_size, sequence_length, -1)
 
@@ -142,7 +148,6 @@ class RMSNorm(nn.Module):
     def forward(self, x):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
-
 
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id, config):
@@ -198,14 +203,8 @@ class Transformer(nn.Module):
         input_ids,
         attention_mask=None,
         start_position=0,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None
+        labels=None
     ):
-        ''' Some arguments in the method signature are not used but are required to make this compatible with the trainer from Hugging Face.
-        '''
         batch_size, sequence_length = input_ids.shape
 
         hidden_state = self.tok_embeddings(input_ids)
@@ -216,13 +215,11 @@ class Transformer(nn.Module):
         freqs_cis = self.freqs_cis[start_position : start_position + sequence_length]
 
         mask = None
-
-        if sequence_length > 1:
-            mask = torch.full((sequence_length, sequence_length), float('-inf'), device=input_ids.device)
-            mask = torch.triu(mask, diagonal=1)
-
-            cached_shift = torch.zeros((sequence_length, start_position), device = input_ids.device)
-            mask = torch.hstack([cached_shift, mask]).type_as(hidden_state) 
+        if attention_mask is not None and (attention_mask != 1).any():
+            # only create mask if attention_mask is passed
+            # if following HF convention, mask is expected to have 1s in the valid tokens and 0s in the masked positions.
+            masked_positions = ~attention_mask.bool() # because torch flash attention expects true for masked.
+            mask = masked_positions[:, None, None, :] # torch flash attention expects dims [B, H, Q, K]
 
         for layer in self.layers:
             hidden_state = layer(hidden_state, start_position, freqs_cis, mask)
