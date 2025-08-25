@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from collections import defaultdict
 
 
-def precompute_freqs_complex_exponential(dim, sequence_length, theta=10000.0):
+def precompute_rope_freqs_complex(dim, sequence_length, theta=10000.0, device='cpu', dtype=torch.float32):
     ''' Computes the frequencies that will be used for positional encoding and also for rotary embeddings in
     the attention mechanism.
     '''
-    # Get the even indices within the embedding dimension and normalises them.
+    # Get the even indices up to the size of the embedding dimension and normalises them.
     even_indices = torch.arange(0, dim, 2)[: (dim // 2)].float()
     normalised_even_indices = even_indices / dim
 
@@ -21,7 +21,7 @@ def precompute_freqs_complex_exponential(dim, sequence_length, theta=10000.0):
     freqs = 1.0 / (theta ** normalised_even_indices)
 
     # Gets an increasing sequence to the size of the input sequence (time steps).
-    timesteps = torch.arange(sequence_length, device=freqs.device, dtype=torch.float32)
+    timesteps = torch.arange(sequence_length, device=device, dtype=dtype)
 
     # Multiplies each timestep for all values in frequencies to form the frequencies matrix.
     # These will be the angles for the polar function.
@@ -31,17 +31,16 @@ def precompute_freqs_complex_exponential(dim, sequence_length, theta=10000.0):
     ones = torch.ones_like(freqs)
 
     # Computes the complex tensor representing the cartesian coordinates that correspond to the polar coordinates (abs "ones" and angles "freqs").
-    freqs_complex_exponential = torch.polar(ones, freqs)
+    freqs_complex = torch.polar(ones, freqs)
 
-    return freqs_complex_exponential
+    return freqs_complex
 
-def reshape_for_broadcast(freqs_cis, ndim, shape):
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(shape)]
-    return freqs_cis.view(*shape)
-
-def apply_rotary_emb(xq, xk, freqs_cis):
-    ''' Apply the rotary embeddings.
+def apply_rope_complex(xq, xk, freqs_cis):
+    ''' Apply the rotary position embeddings.
     '''
+    def reshape_for_broadcast(freqs_cis, ndim, shape):
+        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(shape)]
+        return freqs_cis.view(*shape)
     # We start by reshaping the inputs. Their last dimension is the head_dim, so we need to make sure we split the head dim into 2 parts
     # to account for the complex part.
     xq_complex = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
@@ -93,7 +92,7 @@ class Attention(nn.Module):
         xk = xk.view(batch_size, sequence_length, self.n_kv_heads, self.head_dim)
         xv = xv.view(batch_size, sequence_length, self.n_kv_heads, self.head_dim)
 
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+        xq, xk = apply_rope_complex(xq, xk, freqs_cis=freqs_cis)
 
         keys = repeat_kv(xk, self.n_heads // self.n_kv_heads)
         values = repeat_kv(xv, self.n_heads // self.n_kv_heads)
@@ -192,7 +191,7 @@ class Transformer(nn.Module):
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
-        self.freqs_cis = precompute_freqs_complex_exponential(
+        self.freqs_cis = precompute_rope_freqs_complex(
             config.dim // config.n_heads,
             config.max_seq_len * 2,
             config.rope_theta
