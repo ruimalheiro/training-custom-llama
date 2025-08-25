@@ -145,6 +145,7 @@ model_config = ModelConfig(
     multiple_of=config.multiple_of,
     ffn_dim_multiplier=config.ffn_dim_multiplier,
     norm_eps=config.norm_eps,
+    is_rope_cis=config.is_rope_cis,
     rope_theta=config.rope_theta,
     max_batch_size=config.max_batch_size,
     max_seq_len=config.max_seq_len,

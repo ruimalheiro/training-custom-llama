@@ -108,6 +108,7 @@ class TrainConfig(BaseSettings):
     multiple_of: int = Field(default=1024, alias='MULTIPLE_OF')
     ffn_dim_multiplier: float = Field(default=1.0, alias='FFN_DIM_MULTIPLIER')
     norm_eps: float = Field(default=1e-05, alias='NORM_EPS')
+    is_rope_cis: bool = Field(default=False, alias='IS_ROPE_CIS')
     rope_theta: float = Field(default=500000.0, alias='ROPE_THETA')
     max_batch_size: int = Field(default=4, alias='MAX_BATCH_SIZE')
     max_seq_len: int = Field(default=1024, alias='MAX_SEQ_LEN')

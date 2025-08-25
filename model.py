@@ -10,11 +10,10 @@ from collections import defaultdict
 
 
 def precompute_rope_freqs_complex(dim, sequence_length, theta=10000.0, device='cpu', dtype=torch.float32):
-    ''' Computes the frequencies that will be used for positional encoding and also for rotary embeddings in
-    the attention mechanism.
+    ''' Computes the frequencies that will be used for rope (rotary positional ebedding).
     '''
     # Get the even indices up to the size of the embedding dimension and normalises them.
-    even_indices = torch.arange(0, dim, 2)[: (dim // 2)].float()
+    even_indices = torch.arange(0, dim, 2, device=device, dtype=dtype)[: (dim // 2)]
     normalised_even_indices = even_indices / dim
 
     # Formula for the frequencies.
@@ -58,6 +57,47 @@ def apply_rope_complex(xq, xk, freqs_cis):
     # Retain the datatypes
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+def precompute_rope_freqs(dim, sequence_length, theta=10000.0, device='cpu', dtype=torch.float32):
+    ''' Computes the frequencies that will be used for rope (rotary positional ebedding). Without complex numbers.
+    '''
+    indices = torch.arange(0, dim // 2, device=device, dtype=torch.float32)
+    normalised_indices = indices / (dim // 2)
+
+    freqs = 1.0 / (theta ** normalised_indices)
+
+    timesteps = torch.arange(sequence_length, device=device, dtype=torch.float32)
+
+    freqs = torch.outer(timesteps, freqs)
+
+    cos = torch.cos(freqs).repeat_interleave(2, dim=-1).to(dtype)
+    sin = torch.sin(freqs).repeat_interleave(2, dim=-1).to(dtype)
+
+    freqs_sin_cos = torch.stack((cos, sin), dim=-1)
+
+    return freqs_sin_cos
+
+def apply_rope(xq, xk, freqs):
+    ''' Apply the rotary position embeddings. Without complex numbers.
+        freqs is expected to have dimension [sequence_length, model_dim, 2]
+    '''
+    def rotate_half(x):
+        ''' 90 degree rotation
+        '''
+        # get pairs
+        x1 = x[..., ::2]
+        x2 = x[..., 1::2]
+        # rotates the pairs like if we multiplied a rotating matrix ([[0, -1], [1, 0]]) by a vector [x, y]
+        rotated = torch.stack((-x2, x1), dim=-1)
+        return rotated.flatten(-2) # returns flat tensor with all pairs
+
+    cos = freqs[..., 0][None, :, None, :] # will have dim (1, sequence_length, 1, model_dim)
+    sin = freqs[..., 1][None, :, None, :]
+
+    xq = (xq * cos) + rotate_half(xq) * sin
+    xk = (xk * cos) + rotate_half(xk) * sin
+
+    return xq, xk
+
 def repeat_kv(x, n_rep):
     ''' Repeat x n_rep times. The idea is to spread these tensors through more attention heads. 
     '''
@@ -84,7 +124,9 @@ class Attention(nn.Module):
         self.wv = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
 
-    def forward(self, x, start_pos, freqs_cis, mask=None):
+        self.is_rope_cis = config.is_rope_cis
+
+    def forward(self, x, start_pos, rope_freqs, mask=None):
         batch_size, sequence_length, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
@@ -92,7 +134,10 @@ class Attention(nn.Module):
         xk = xk.view(batch_size, sequence_length, self.n_kv_heads, self.head_dim)
         xv = xv.view(batch_size, sequence_length, self.n_kv_heads, self.head_dim)
 
-        xq, xk = apply_rope_complex(xq, xk, freqs_cis=freqs_cis)
+        if self.is_rope_cis:
+            xq, xk = apply_rope_complex(xq, xk, freqs_cis=rope_freqs)
+        else:
+            xq, xk = apply_rope(xq, xk, freqs=rope_freqs)
 
         keys = repeat_kv(xk, self.n_heads // self.n_kv_heads)
         values = repeat_kv(xv, self.n_heads // self.n_kv_heads)
@@ -145,8 +190,7 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
+        return self._norm(x) * self.weight
 
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id, config):
@@ -164,8 +208,8 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.ffn_norm = RMSNorm(config.dim, eps=config.norm_eps)
 
-    def forward(self, x, start_position, freqs_cis, mask=None):
-        hidden_state = x + self.attention(self.attention_norm(x), start_position, freqs_cis, mask)
+    def forward(self, x, start_position, rope_freqs, mask=None):
+        hidden_state = x + self.attention(self.attention_norm(x), start_position, rope_freqs, mask)
         output = hidden_state + self.feed_forward(self.ffn_norm(hidden_state))
         return output
 
@@ -191,11 +235,21 @@ class Transformer(nn.Module):
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
-        self.freqs_cis = precompute_rope_freqs_complex(
-            config.dim // config.n_heads,
-            config.max_seq_len * 2,
-            config.rope_theta
-        )
+        self.is_rope_cis = config.is_rope_cis
+
+        if self.is_rope_cis:
+            rope_freqs = precompute_rope_freqs_complex(
+                config.dim // config.n_heads,
+                config.max_seq_len * 2,
+                config.rope_theta
+            )
+        else:
+            rope_freqs = precompute_rope_freqs(
+                config.dim // config.n_heads,
+                config.max_seq_len * 2,
+                config.rope_theta
+            )
+        self.register_buffer('rope_freqs', rope_freqs, persistent=False)
 
     def forward(
         self,
@@ -208,24 +262,29 @@ class Transformer(nn.Module):
 
         hidden_state = self.tok_embeddings(input_ids)
 
-        if self.freqs_cis.device != hidden_state.device:
-            self.freqs_cis = self.freqs_cis.to(hidden_state.device)
+        if self.rope_freqs.device != hidden_state.device or (not self.is_rope_cis and self.rope_freqs.dtype != hidden_state.dtype):
+            self.rope_freqs = self.rope_freqs.to(
+                dtype=hidden_state.dtype if not self.is_rope_cis else self.rope_freqs.dtype,
+                device=hidden_state.device
+            )
 
-        freqs_cis = self.freqs_cis[start_position : start_position + sequence_length]
+        rope_freqs = self.rope_freqs[start_position : start_position + sequence_length]
 
         mask = None
-        if attention_mask is not None and (attention_mask != 1).any():
-            # only create mask if attention_mask is passed
-            # if following HF convention, mask is expected to have 1s in the valid tokens and 0s in the masked positions.
-            masked_positions = ~attention_mask.bool() # because torch flash attention expects true for masked.
-            mask = masked_positions[:, None, None, :] # torch flash attention expects dims [B, H, Q, K]
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(hidden_state.device)
+            if (attention_mask != 1).any():
+                # only create mask if attention_mask is passed
+                # if following HF convention, mask is expected to have 1s in the valid tokens and 0s in the masked positions.
+                masked_positions = ~attention_mask.bool() # because torch flash attention expects true for masked.
+                mask = masked_positions[:, None, None, :] # torch flash attention expects dims [B, H, Q, K]
 
         for layer in self.layers:
-            hidden_state = layer(hidden_state, start_position, freqs_cis, mask)
+            hidden_state = layer(hidden_state, start_position, rope_freqs, mask)
 
         hidden_state = self.norm(hidden_state)
 
-        logits = self.output(hidden_state).float()
+        logits = self.output(hidden_state)
 
         loss = None
         if labels is not None:
@@ -419,8 +478,6 @@ class Transformer(nn.Module):
                         pass
                 out_tokens.append(toks)
 
-        torch.cuda.empty_cache()
-
         return out_tokens
 
     def test_dialogue_custom(
@@ -505,6 +562,7 @@ class ModelConfig:
     multiple_of: int
     ffn_dim_multiplier: float
     norm_eps: float
+    is_rope_cis: bool
     rope_theta: float
     max_batch_size: int
     max_seq_len: int
@@ -526,6 +584,7 @@ class ModelConfig:
             'multiple_of': self.multiple_of,
             'ffn_dim_multiplier': self.ffn_dim_multiplier,
             'norm_eps': self.norm_eps,
+            'is_rope_cis': self.is_rope_cis,
             'rope_theta': self.rope_theta,
             'max_batch_size': self.max_batch_size,
             'max_seq_len': self.max_seq_len,
