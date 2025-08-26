@@ -120,6 +120,7 @@ lora_rank = config.lora_rank
 lora_alpha = config.lora_alpha
 lora_dropout = config.lora_dropout
 lora_target_modules = config.lora_target_modules
+use_torch_compile = config.use_torch_compile
 
 # validation
 validate_every_x_steps = config.validate_every_x_steps
@@ -266,6 +267,9 @@ if loaded_train_loader_state is not None and loaded_val_loader_state is not None
 #### INIT MODEL AND TRAINING SETUP
 model = Transformer(model_config)
 
+if use_torch_compile:
+    model = torch.compile(model)
+
 if checkpoint and loaded_model_state:
     if is_lora_checkpoint:
         apply_lora(
@@ -334,10 +338,7 @@ if loaded_optimizer_state is not None:
             state = optimizer.state[p]
             for k, v in state.items():
                 if torch.is_tensor(v):
-                    if k in ('exp_avg', 'exp_avg_sq'):
-                        state[k] = v.to(device=p.device, dtype=torch.float32) # keep moments in fp32
-                    else:
-                        state[k] = v.to(device=p.device, dtype=p.dtype)
+                    state[k] = v.to(device=p.device, dtype=p.dtype)
 
     if is_master_process:
         print('optimizer state loaded and ready')

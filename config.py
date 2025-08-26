@@ -88,6 +88,7 @@ class TrainConfig(BaseSettings):
     lora_alpha: int = Field(default=8, alias='LORA_ALPHA')
     lora_dropout: float = Field(default=0.05, alias='LORA_DROPOUT')
     lora_target_modules: list[str] = Field(alias='LORA_TARGET_MODULES')
+    use_torch_compile: bool = Field(default=False, alias='USE_TORCH_COMPILE') # Will add more options later.
 
     # validation
     validate_every_x_steps: int = Field(alias='VALIDATE_EVERY_X_STEPS')
