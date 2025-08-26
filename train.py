@@ -391,6 +391,7 @@ if is_master_process:
     print(f'warmup steps: {warmup_steps}')
     print(f'weight decay: {weight_decay}')
     print(f'max steps: {max_steps}')
+    print(f'using torch compile: {use_torch_compile}')
 
     if is_pretraining or is_instruct_training:
         # For pretraining according to the Chinchilla paper ~20.0 is reasonable. For instruct: ~0.2 to ~0.5 is reasonable
