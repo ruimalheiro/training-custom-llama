@@ -7,6 +7,11 @@ class TrainingStage(str, Enum):
     INSTRUCT = 'instruct'
     DPO = 'dpo'
 
+class TrainingPrecision(str, Enum):
+    BF16 = 'bf16'
+    FP16 = 'fp16'
+    FP32 = 'fp32'
+
 class TrainConfig(BaseSettings):
     # third party envs
     wandb_api_key: str | None = Field(default=None, alias='WANDB_API_KEY')
@@ -69,6 +74,7 @@ class TrainConfig(BaseSettings):
     huggingface_tokenizer: bool = Field(default=False, alias='HUGGINGFACE_TOKENIZER')
 
     # train config
+    training_precision: TrainingPrecision = Field(deafult=TrainingPrecision.BF16, alias='TRAINING_PRECISION')
     training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')
     max_lr: float = Field(alias='MAX_LR')

@@ -10,7 +10,8 @@ import json
 
 from config import (
     config,
-    TrainingStage
+    TrainingStage,
+    TrainingPrecision
 )
 os.environ['HF_HOME'] = config.hf_home
 os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
@@ -176,6 +177,25 @@ args = parser.parse_args()
 #### INIT DISTRIBUTED DATA PARALLEL (DDP)
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
 
+#### TRAINING PRECISION, AUTOCAST AND SCALER
+if config.training_precision == TrainingPrecision.BF16:
+    use_autocast = True
+    scaler = None
+    model_dtype = torch.float32
+    autocast_dtype = torch.bfloat16
+elif config.training_precision == TrainingPrecision.FP16:
+    use_autocast = True
+    scaler = torch.amp.GradScaler(device_type) # need gradscaler when fp16
+    model_dtype = torch.float32
+    autocast_dtype = torch.float16
+elif config.training_precision == TrainingPrecision.FP32:
+    use_autocast = False
+    scaler = None
+    model_dtype = torch.float32
+    autocast_dtype = torch.float32
+else:
+    raise ValueError('Invalid training precision')
+
 #### INIT WANDB wrapper
 wandb = WandbWrapper(enabled=wandb_enabled, is_master_process=is_master_process)
 wandb.init(wandb_project_name, config={
@@ -267,9 +287,6 @@ if loaded_train_loader_state is not None and loaded_val_loader_state is not None
 #### INIT MODEL AND TRAINING SETUP
 model = Transformer(model_config)
 
-if use_torch_compile:
-    model = torch.compile(model)
-
 if checkpoint and loaded_model_state:
     if is_lora_checkpoint:
         apply_lora(
@@ -298,7 +315,7 @@ if lora_enabled and not is_lora_checkpoint:
         is_master_process=is_master_process
     )
 
-model.to(device=device, dtype=torch.bfloat16)
+model.to(device=device, dtype=model_dtype)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -315,6 +332,10 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 
 # Final check to validate previous calculations.
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
+
+#### COMPILE
+if use_torch_compile:
+    model = torch.compile(model)
 
 #### PREPARE DDP
 model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
@@ -347,13 +368,13 @@ if loaded_optimizer_state is not None:
 teacher_model = None
 if is_model_distillation:
     print(f'Loading teacher model on gpu: {ddp_rank}...')
-    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device)
+    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device).eval()
     print(f'Finished loading teacher model on gpu: {ddp_rank}...')
 
 # DPO (Direct Preference Optimization) reference model setup
 if is_dpo_training:
     print(f'Preparing DPO reference model...')
-    dpo_ref_model = copy.deepcopy(raw_model).eval().to(device, dtype=torch.bfloat16)
+    dpo_ref_model = copy.deepcopy(raw_model).eval().to(device, dtype=model_dtype)
     for p in dpo_ref_model.parameters():
         p.requires_grad = False
     print(f'Finished preparing DPO reference model')
@@ -384,7 +405,10 @@ if is_master_process:
         print(f'weights and biases project name: "{wandb_project_name}"')
 
     print(f'tokenizer loaded from: "{tokenizer_checkpoint_path}"')
-
+    print(f'training precision: {model_dtype}')
+    print(f'using autocast: {use_autocast}')
+    if use_autocast:
+        print(f'autocast dtype: {autocast_dtype}')
     print(f'total batch size: {total_batch_size}')
     print(f'max learning rate: {max_lr}')
     print(f'min learning rate: {min_lr}')
@@ -508,7 +532,7 @@ with torch_profiler_context as prof:
                         x, y, z = val_loader.next_batch()
                         x, y, z = x.to(device, non_blocking=True), y.to(device, non_blocking=True), z.to(device, non_blocking=True)
 
-                        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                        with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                             policy_log_probs_pos = dpo_log_probs(model, x, y)
                             policy_log_probs_neg = dpo_log_probs(model, x, z)
                             reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
@@ -525,7 +549,7 @@ with torch_profiler_context as prof:
                     else:
                         x, y = val_loader.next_batch()
                         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-                        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                        with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                             loss = model(x, labels=y)['loss']
 
                         n_valid = (y != -100).sum().float()
@@ -584,7 +608,7 @@ with torch_profiler_context as prof:
 
                 # get the logits
                 with torch.no_grad():
-                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                         logits = model(tokens)
 
                     predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
@@ -635,12 +659,12 @@ with torch_profiler_context as prof:
 
                 train_local_token_sum += 4 * x.numel() + 2 * y.numel() + 2 * z.numel()
 
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                     policy_log_probs_pos = dpo_log_probs(model, x, y)
                     policy_log_probs_neg = dpo_log_probs(model, x, z)
 
                 with torch.no_grad():
-                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                         reference_log_probs_pos = dpo_log_probs(dpo_ref_model, x, y)
                         reference_log_probs_neg = dpo_log_probs(dpo_ref_model, x, z)
 
@@ -661,7 +685,7 @@ with torch_profiler_context as prof:
 
                 train_local_token_sum += x.numel()
 
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                     result = model(x, labels=y)
                     loss = result['loss']
 
@@ -687,7 +711,10 @@ with torch_profiler_context as prof:
             if ddp:
                 model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
 
-            loss_scaled.backward()
+            if scaler:
+                scaler.scale(loss_scaled).backward()
+            else:
+                loss_scaled.backward()
 
         train_loss_sum = train_loss_local_sum
         train_loss_token_sum = train_loss_local_token_sum
@@ -705,13 +732,20 @@ with torch_profiler_context as prof:
 
         train_avg_loss = train_loss_sum / train_loss_token_sum
 
+        if scaler:
+            scaler.unscale_(optimizer) # due to fp16, optimizer gradients are inflated so need to unscale before clipping.
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
         lr = cosine_scheduler(step, min_lr, max_lr, warmup_steps, max_steps)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-        optimizer.step()
+        if scaler:
+            # The dynamic range in fp16 is low and this handles NaNs/infs which might occur more.
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
 
         t1.record()
         t1.synchronize()
