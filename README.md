@@ -1,6 +1,6 @@
 # Llama-style transformer and multi-node / multi-GPU training
 
-This is a small project for educational purposes that implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training.
+This is a project for educational purposes that implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training.
 
 This repo demonstrates:
 - Llama 3 like baseline architecture in pure PyTorch
