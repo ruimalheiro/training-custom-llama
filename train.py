@@ -607,7 +607,6 @@ with torch_profiler_context as prof:
 
                     print('Skipping save checkpoint...')
 
-                stop_signal = torch.tensor([0], device=device)
                 if epochs_no_improve == early_stopping_patience:
                     print(f'The validation loss did not improve for: {early_stopping_patience} - Aborting training...')
                     abort_if_no_improve[0] = 1
