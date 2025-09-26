@@ -1,10 +1,10 @@
 # Llama-style transformer and multi-node / multi-GPU training
 
-This is a small project for educational purposes that implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training with Torch DDP.
+This is a small project for educational purposes that implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training.
 
 This repo demonstrates:
 - Llama 3 like baseline architecture in pure PyTorch
-- Multi-node training with PyTorch DDP
+- Multi-node / multi-GPU training
 - Multiple training methods (SFT, distill, DPO)
 
 **NOTE**: 
@@ -19,6 +19,8 @@ The implementation in this project is a bit different but the core ideas are the
 
 ## Supported features in the trainer and config options
 - Multi-node / multi-GPU
+  - DDP
+  - FSDP (Zero2 and Zero3)
 - Fused AdamW (if available)
 - Pre-training
 - Instruct fine-tuning (SFT)
@@ -37,7 +39,7 @@ The implementation in this project is a bit different but the core ideas are the
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
 - `data_preparation_utils.py` Contains logic to process a dataset into multiple shards.
 - `dataloaders.py` Dataloaders logic to sample and distribute the data.
-- `ddp_utils.py` Contains the main logic to set up the Torch DDP (Distributed Data Parallel).
+- `ddp_utils.py` Contains the main logic to set up the Torch DDP (Distributed Data Parallel) and FSDP (Fully Sharded Data Parallel).
 - `distillation_utils.py` Logic for distillation loss.
 - `dpo_utils.py` Logic for DPO loss.
 - `hellaswag_utils.py` Contains the main logic to iterate, process and evaluate HellaSwag examples.

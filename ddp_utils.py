@@ -1,8 +1,15 @@
 import os
 import torch
 
-from torch.distributed import init_process_group
+from functools import partial
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    ShardingStrategy
+)
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from model import TransformerBlock
 
 
 os.environ.setdefault('TORCH_NCCL_ASYNC_ERROR_HANDLING', '1')
@@ -69,4 +76,32 @@ def prepare_model_for_ddp(model, ddp_local_rank):
             find_unused_parameters=False
         )
     raw_model = model.module if ddp else model
+    return model, raw_model
+
+def prepare_model_for_fsdp(model, ddp_local_rank, fsdp_precision, sharding='zero3'):
+    if sharding == 'zero3':
+        strategy = ShardingStrategy.FULL_SHARD
+    elif sharding == 'zero2':
+        strategy = ShardingStrategy.SHARD_GRAD_OP
+    else:
+        strategy = ShardingStrategy.NO_SHARD
+
+    auto_wrap_policy = partial(
+        transformer_auto_wrap_policy,
+        transformer_layer_cls={TransformerBlock}
+    )
+
+    raw_model = model
+
+    ddp = int(os.environ.get('RANK', -1)) != -1
+    if ddp:
+        model = FSDP(
+            model,
+            auto_wrap_policy=auto_wrap_policy,
+            sharding_strategy=strategy,
+            mixed_precision=fsdp_precision,
+            device_id=torch.device(f'cuda:{ddp_local_rank}'),
+            sync_module_states=True, # weights broadcasting at initialization..
+            use_orig_params=True # The default (false) would flatten the params and breaks our adam configuration as we sepparate decay vs non decay params.
+        )
     return model, raw_model

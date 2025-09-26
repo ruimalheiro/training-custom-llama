@@ -12,6 +12,11 @@ class TrainingPrecision(str, Enum):
     FP16 = 'fp16'
     FP32 = 'fp32'
 
+class FSDPShardingStrategy(str, Enum):
+    DDP = 'ddp'
+    ZERO_2 = 'zero2'
+    ZERO_3 = 'zero3'
+
 class TrainConfig(BaseSettings):
     # third party envs
     wandb_api_key: str | None = Field(default=None, alias='WANDB_API_KEY')
@@ -95,6 +100,8 @@ class TrainConfig(BaseSettings):
     lora_dropout: float = Field(default=0.05, alias='LORA_DROPOUT')
     lora_target_modules: list[str] = Field(alias='LORA_TARGET_MODULES')
     use_torch_compile: bool = Field(default=False, alias='USE_TORCH_COMPILE') # Will add more options later.
+    use_fsdp: bool = Field(default=False, alias='USE_FSDP')
+    fsdp_sharding_strategy: FSDPShardingStrategy = Field(deafult=FSDPShardingStrategy.ZERO_3, alias='FSDP_SHARDING_STRATEGY')
 
     # validation
     validate_every_x_steps: int = Field(alias='VALIDATE_EVERY_X_STEPS')

@@ -27,6 +27,7 @@ from lr_schedulers import cosine_scheduler
 from distillation_utils import distillation_loss
 from wandb_utils import WandbWrapper
 from contextlib import nullcontext
+from torch.distributed.fsdp import MixedPrecision
 
 from torch.profiler import (
     profile,
@@ -41,7 +42,8 @@ from torch.distributed import (
 )
 from ddp_utils import (
     init_multi_gpu,
-    prepare_model_for_ddp
+    prepare_model_for_ddp,
+    prepare_model_for_fsdp
 )
 from model import (
     Transformer,
@@ -50,7 +52,8 @@ from model import (
 from model_utils import (
     print_dict,
     save_model,
-    load_model
+    load_model,
+    clip_grad_norm
 )
 from hellaswag_utils import (
     iterate_hellaswag_val_examples,
@@ -122,6 +125,8 @@ lora_alpha = config.lora_alpha
 lora_dropout = config.lora_dropout
 lora_target_modules = config.lora_target_modules
 use_torch_compile = config.use_torch_compile
+use_fsdp = config.use_fsdp
+fsdp_sharding_strategy = config.fsdp_sharding_strategy
 
 # validation
 validate_every_x_steps = config.validate_every_x_steps
@@ -183,16 +188,27 @@ if config.training_precision == TrainingPrecision.BF16:
     scaler = None
     model_dtype = torch.float32
     autocast_dtype = torch.bfloat16
+    fsdp_mp = MixedPrecision(
+        param_dtype=torch.float32,
+        reduce_dtype=torch.bfloat16,
+        buffer_dtype=torch.bfloat16
+    ) if use_fsdp else None
 elif config.training_precision == TrainingPrecision.FP16:
     use_autocast = True
     scaler = torch.amp.GradScaler(device_type) # need gradscaler when fp16
     model_dtype = torch.float32
     autocast_dtype = torch.float16
+    fsdp_mp = MixedPrecision(
+        param_dtype=torch.float32,
+        reduce_dtype=torch.float16,
+        buffer_dtype=torch.float16
+    ) if use_fsdp else None
 elif config.training_precision == TrainingPrecision.FP32:
     use_autocast = False
     scaler = None
     model_dtype = torch.float32
     autocast_dtype = torch.float32
+    fsdp_mp = None
 else:
     raise ValueError('Invalid training precision')
 
@@ -338,7 +354,10 @@ if use_torch_compile:
     model = torch.compile(model)
 
 #### PREPARE DDP
-model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
+if use_fsdp:
+    model, raw_model = prepare_model_for_fsdp(model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
+else:
+    model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
 
 #### INIT OPTIMIZER
 optimizer = raw_model.configure_adamw_optimizer(
@@ -416,6 +435,9 @@ if is_master_process:
     print(f'weight decay: {weight_decay}')
     print(f'max steps: {max_steps}')
     print(f'using torch compile: {use_torch_compile}')
+    print(f'Using FSDP: {use_fsdp}')
+    if use_fsdp:
+        print(f'FSDP sharding strategy: {fsdp_sharding_strategy.value}')
 
     if is_pretraining or is_instruct_training:
         # For pretraining according to the Chinchilla paper ~20.0 is reasonable. For instruct: ~0.2 to ~0.5 is reasonable
@@ -708,7 +730,7 @@ with torch_profiler_context as prof:
             train_loss_local_sum += loss.detach() * n_valid
             train_loss_local_token_sum  += n_valid
 
-            if ddp:
+            if ddp and not use_fsdp: # require_backward_grad_sync is not used with FSDP
                 model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
 
             if scaler:
@@ -734,7 +756,7 @@ with torch_profiler_context as prof:
 
         if scaler:
             scaler.unscale_(optimizer) # due to fp16, optimizer gradients are inflated so need to unscale before clipping.
-        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        norm = clip_grad_norm(model, 1.0, use_fsdp and ddp)
 
         lr = cosine_scheduler(step, min_lr, max_lr, warmup_steps, max_steps)
         for param_group in optimizer.param_groups:

@@ -125,3 +125,8 @@ def load_model(
         torch.cuda.empty_cache()
     
     return model_state, optimizer_state, step, loss, train_dl_state, val_dl_state, metadata
+
+def clip_grad_norm(model, max_norm, is_fsdp=False):
+    if is_fsdp:
+        return torch.distributed.fsdp.FullyShardedDataParallel.clip_grad_norm_(model, max_norm)
+    return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
