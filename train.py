@@ -144,6 +144,12 @@ test_generation_prompts = test_prompts_data[training_stage.value]
 # Init the tokenizer
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
+# model config
+
+assert config.dim % config.n_heads == 0, f'"dim" ({config.dim}) must be divisible by "n_heads" ({config.n_heads})'
+assert config.n_kv_heads <= config.n_heads, f'"n_kv_heads" ({config.n_kv_heads}) must be less or equal to "n_heads" ({config.n_heads})'
+assert config.n_heads % config.n_kv_heads == 0, f'"n_heads" ({config.n_heads}) must be divisible by n_kv_heads" ({config.n_kv_heads})'
+
 model_config = ModelConfig(
     dim=config.dim,
     n_layers=config.n_layers,
