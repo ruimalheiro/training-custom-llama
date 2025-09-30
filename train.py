@@ -37,7 +37,6 @@ from torch.profiler import (
 )
 from torch.distributed import (
     broadcast,
-    barrier,
     destroy_process_group
 )
 from ddp_utils import (
@@ -51,8 +50,10 @@ from model import (
 )
 from model_utils import (
     print_dict,
-    save_model,
-    load_model,
+    save_checkpoint,
+    load_checkpoint,
+    load_model_state,
+    load_optimizer_state,
     clip_grad_norm
 )
 from hellaswag_utils import (
@@ -188,6 +189,11 @@ args = parser.parse_args()
 #### INIT DISTRIBUTED DATA PARALLEL (DDP)
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
 
+# print helper
+def log(content, force=False):
+    if is_master_process or force:
+        print(content)
+
 #### TRAINING PRECISION, AUTOCAST AND SCALER
 if config.training_precision == TrainingPrecision.BF16:
     use_autocast = True
@@ -258,7 +264,7 @@ if checkpoint is not None:
         loaded_train_loader_state,
         loaded_val_loader_state,
         loaded_extra_checkpoint_metadata
-    ) = load_model(
+    ) = load_checkpoint(
         load_checkpoints_path,
         checkpoint,
         reset_optimizer=args.reset_optimizer,
@@ -270,23 +276,18 @@ if checkpoint is not None:
         best_val_loss = best_loss
 
     if loaded_extra_checkpoint_metadata.get('training_stage', None) != training_stage:
-        if is_master_process:
-            print('** WARNING: Training stage has chanded **')
+        log('** WARNING: Training stage has chanded **')
         if not args.start_step:
-            if is_master_process:
-                print('ignoring stored start step...')
+            log('ignoring stored start step...')
             start_step = 0
         if loaded_train_loader_state is not None and loaded_val_loader_state is not None:
-            if is_master_process:
-                print('ignoring stored metada for dataset...')
+            log('ignoring stored metada for dataset...')
             loaded_train_loader_state = None
             loaded_val_loader_state = None
         if loaded_optimizer_state is not None:
-            if is_master_process:
-                print('ignoring stored state of optimizer...')
+            log('ignoring stored state of optimizer...')
             loaded_optimizer_state = None
-        if is_master_process:
-            print('\n')
+        log('\n')
 
     is_lora_checkpoint = loaded_extra_checkpoint_metadata.get('lora_enabled', False)
 
@@ -320,11 +321,10 @@ if checkpoint and loaded_model_state:
             device=device,
             is_master_process=is_master_process
         )
-    model.load_state_dict(loaded_model_state)
-    if is_master_process:
-        print('\nModel loading')
-        print('----------------------------------------')
-        print('Model checkpoint loaded and ready')
+    load_model_state(model, loaded_model_state, use_fsdp)
+    log('\nModel loading')
+    log('----------------------------------------')
+    log('Model checkpoint loaded and ready')
 
 if lora_enabled and not is_lora_checkpoint:
     apply_lora(
@@ -336,8 +336,6 @@ if lora_enabled and not is_lora_checkpoint:
         device=device,
         is_master_process=is_master_process
     )
-
-model.to(device=device, dtype=model_dtype)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -355,15 +353,39 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 # Final check to validate previous calculations.
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
 
+# COUNT PARAMS
+model_params = model.get_parameters_count()
+
+# DPO (Direct Preference Optimization) reference model setup
+dpo_ref_model = None
+if is_dpo_training:
+    log(f'Preparing DPO reference model...', True)
+    dpo_ref_model = copy.deepcopy(model).eval()
+    for p in dpo_ref_model.parameters():
+        p.requires_grad = False
+    log(f'Finished preparing DPO reference model', True)
+
 #### COMPILE
 if use_torch_compile:
-    model = torch.compile(model)
+    model.compile()
+    if is_dpo_training and dpo_ref_model:
+        dpo_ref_model.compile()
 
-#### PREPARE DDP
-if use_fsdp:
+#### PREPARE DDP / FSDP
+# for FSDP no need to move as that would actually cost more VRAM, instead let FSDP initialization alocate the shard to the device id (ddp_local_rank).
+if use_fsdp and dist.is_initialized():
     model, raw_model = prepare_model_for_fsdp(model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
+    if is_dpo_training and dpo_ref_model:
+        dpo_ref_model, _ = prepare_model_for_fsdp(dpo_ref_model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
 else:
+    # move to gpu
+    model.to(device=device, dtype=model_dtype)
+    if is_dpo_training and dpo_ref_model:
+        dpo_ref_model.to(device, dtype=model_dtype)
+
     model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
+    if is_dpo_training and dpo_ref_model:
+        dpo_ref_model, _ = prepare_model_for_ddp(dpo_ref_model, ddp_local_rank)
 
 #### INIT OPTIMIZER
 optimizer = raw_model.configure_adamw_optimizer(
@@ -376,7 +398,7 @@ optimizer = raw_model.configure_adamw_optimizer(
 )
 if loaded_optimizer_state is not None:
     assert type(loaded_optimizer_state) == dict
-    optimizer.load_state_dict(loaded_optimizer_state)
+    load_optimizer_state(optimizer, model if use_fsdp else raw_model, loaded_optimizer_state, use_fsdp)
 
     # This is to ensure the optimiser state respect the device for all params
     for group in optimizer.param_groups:
@@ -386,28 +408,18 @@ if loaded_optimizer_state is not None:
                 if torch.is_tensor(v):
                     state[k] = v.to(device=p.device, dtype=p.dtype)
 
-    if is_master_process:
-        print('optimizer state loaded and ready')
+    log('optimizer state loaded and ready')
 
 # Model distillation setup
 teacher_model = None
 if is_model_distillation:
-    print(f'Loading teacher model on gpu: {ddp_rank}...')
+    log(f'Loading teacher model on gpu: {ddp_rank}...', True)
     teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device).eval()
-    print(f'Finished loading teacher model on gpu: {ddp_rank}...')
-
-# DPO (Direct Preference Optimization) reference model setup
-if is_dpo_training:
-    print(f'Preparing DPO reference model...')
-    dpo_ref_model = copy.deepcopy(raw_model).eval().to(device, dtype=model_dtype)
-    for p in dpo_ref_model.parameters():
-        p.requires_grad = False
-    print(f'Finished preparing DPO reference model')
+    log(f'Finished loading teacher model on gpu: {ddp_rank}...', True)
 
 #### CONFIG SUMMARY
 
 total_tokens = train_loader.calculate_max_tokens()
-model_params = raw_model.get_parameters_count()
 complete_max_steps = math.ceil(total_tokens / total_batch_size)
 
 if is_master_process:
@@ -493,9 +505,9 @@ if is_master_process:
 
 #### TRAINING LOOP
 if ddp:
-    barrier(device_ids=[ddp_local_rank])
+    dist.barrier(device_ids=[ddp_local_rank])
 
-print(f'\nGPU: {ddp_local_rank} is ready.')
+log(f'\nGPU: {ddp_local_rank} is ready.', True)
 
 tqdm_label = f'Training ({training_stage.value})'
 
@@ -515,11 +527,11 @@ def trace_handler(prof):
         )
         tensor_board(prof)
     else:
-        print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10)) # TODO can be configured.
+        log(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10), True) # TODO can be configured.
 
 torch_profiler_enabled = config.torch_profiler_enabled and is_master_process
 if torch_profiler_enabled:
-    print('\nWARN: Torch profiler is enabled!\n')
+    log('\nWARN: Torch profiler is enabled!\n')
 torch_profiler_context = (
     profile(
         activities=[
@@ -541,12 +553,12 @@ torch_profiler_context = (
 with torch_profiler_context as prof:
     for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label, disable=not is_master_process):
         if abort_if_no_improve.item() == 1:
-            print(f'Rank {ddp_rank} received stop signal.')
+            log(f'Rank {ddp_rank} received stop signal.', True)
             break
 
         last_step = (step == max_steps - 1)
 
-        if step > 0 and step % validate_every_x_steps == 0 or last_step:
+        if (step > 0 and step % validate_every_x_steps == 0) or last_step:
             model.eval()
 
             val_loss_sum = torch.tensor(0.0, device=device)
@@ -591,36 +603,48 @@ with torch_profiler_context as prof:
             val_ce = (val_loss_sum / val_tok_sum).item()
 
             if is_master_process:
-                print(f'\nvalidation loss: {val_ce:.4f}')
+                log(f'\nvalidation loss: {val_ce:.4f}')
                 wandb_metrics = {'Validation Loss': val_ce}
                 if is_dpo_training:
-                    print(dpo_metrics['str'])
+                    log(dpo_metrics['str'])
                     wandb_metrics.update(dpo_metrics['wandb'])
                 wandb.log(wandb_metrics)
 
-                if val_ce < best_val_loss:
-                    best_val_loss = val_ce
-                    epochs_no_improve = 0
+            if val_ce < best_val_loss:
+                best_val_loss = val_ce
+                epochs_no_improve = 0
 
-                    if save_checkpoints is True:
-                        save_model(save_checkpoints_path, raw_model, model_config, step, val_ce, optimizer, train_loader, val_loader, extra_checkpoint_metadata)
+                if save_checkpoints is True:
+                    save_checkpoint(
+                        save_checkpoints_path,
+                        model if use_fsdp else raw_model,
+                        model_config,
+                        step,
+                        val_ce,
+                        optimizer,
+                        train_loader,
+                        val_loader,
+                        extra_checkpoint_metadata,
+                        is_master_process,
+                        use_fsdp
+                    )
+            else:
+                if step > early_stopping_patience_skip_steps:
+                    epochs_no_improve += 1
+                    log(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}')
                 else:
-                    if step > early_stopping_patience_skip_steps:
-                        epochs_no_improve += 1
-                        print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}')
-                    else:
-                        print(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}')
+                    log(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}')
 
-                    print('Skipping save checkpoint...')
+                log('Skipping save checkpoint...')
 
-                if epochs_no_improve == early_stopping_patience:
-                    print(f'The validation loss did not improve for: {early_stopping_patience} - Aborting training...')
-                    abort_if_no_improve[0] = 1
+            if epochs_no_improve == early_stopping_patience:
+                log(f'The validation loss did not improve for: {early_stopping_patience} - Aborting training...')
+                abort_if_no_improve[0] = 1
 
             if ddp:
                 broadcast(abort_if_no_improve, src=0)
 
-        if is_pretraining and (step > 0 and step % hellaswag_every_x_steps == 0 or last_step):
+        if is_pretraining and ((step > 0 and step % hellaswag_every_x_steps == 0) or last_step):
             model.eval()
             num_correct_norm = 0
             num_total = 0
@@ -654,10 +678,10 @@ with torch_profiler_context as prof:
             acc_norm = num_correct_norm / num_total
 
             if is_master_process:
-                print(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}')
+                log(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}')
                 wandb.log({'HellaSwag accuracy': acc_norm})
 
-        if step > 0 and step % generate_every_x_steps == 0 or last_step:
+        if (step > 0 and step % generate_every_x_steps == 0) or last_step:
             model.eval()
             raw_model.test_dialogue_custom(
                 test_generation_prompts,
@@ -780,10 +804,10 @@ with torch_profiler_context as prof:
         tokens_per_sec = train_token_sum / dt
 
         if is_master_process:
-            print(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
+            log(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
             wandb_metrics = {'Train Loss': train_avg_loss}
             if is_dpo_training:
-                print(dpo_metrics['str'])
+                log(dpo_metrics['str'])
                 wandb_metrics.update(dpo_metrics['wandb'])
             wandb.log(wandb_metrics)
 
@@ -791,7 +815,7 @@ with torch_profiler_context as prof:
             prof.step()
 
 if ddp:
-    barrier(device_ids=[ddp_local_rank])
+    dist.barrier(device_ids=[torch.cuda.current_device()])
     destroy_process_group()
 
 wandb.finish()
