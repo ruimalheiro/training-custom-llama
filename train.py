@@ -807,7 +807,13 @@ with torch_profiler_context as prof:
 
         if is_master_process:
             log(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
-            wandb_metrics = {'Train Loss': train_avg_loss}
+            wandb_metrics = {
+                'Train Loss': train_avg_loss,
+                'Learning rate': lr,
+                'Norm': norm,
+                'Step time (seconds)': dt,
+                'Tok/Sec': tokens_per_sec
+            }
             if is_dpo_training:
                 log(dpo_metrics['str'])
                 wandb_metrics.update(dpo_metrics['wandb'])
