@@ -55,6 +55,7 @@ def save_checkpoint(
     train_loader,
     val_loader,
     extra_metadata,
+    max_number_checkpoints,
     is_master_process,
     use_fsdp=False
 ):
@@ -89,7 +90,7 @@ def save_checkpoint(
         torch.save(checkpoint, checkpoint_path)
         print(f'Saved checkpoint: {checkpoint_path}')
 
-        manage_checkpoints(checkpoint_dir, current_step=step, max_files=2)
+        manage_checkpoints(checkpoint_dir, current_step=step, max_files=max_number_checkpoints)
 
 def load_checkpoint(
     checkpoint_dir,

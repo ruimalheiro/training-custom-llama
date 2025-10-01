@@ -69,6 +69,7 @@ class TrainConfig(BaseSettings):
     dpo_load_checkpoints_path: str = Field(alias='DPO_LOAD_CHECKPOINTS_PATH')
 
     save_checkpoints: bool = Field(default=False, alias='SAVE_CHECKPOINTS')
+    max_number_checkpoints: int = Field(default=2, alias='MAX_NUMBER_CHECKPOINTS')
 
     # wandb
     wandb_enabled: bool = Field(default=False, alias='WANDB_ENABLED')

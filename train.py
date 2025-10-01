@@ -98,6 +98,7 @@ dpo_checkpoints_path = config.dpo_load_checkpoints_path
 
 # save toggle
 save_checkpoints = config.save_checkpoints
+max_number_checkpoints = config.max_number_checkpoints
 
 # wandb
 wandb_enabled = config.wandb_enabled
@@ -625,6 +626,7 @@ with torch_profiler_context as prof:
                         train_loader,
                         val_loader,
                         extra_checkpoint_metadata,
+                        max_number_checkpoints,
                         is_master_process,
                         use_fsdp
                     )
