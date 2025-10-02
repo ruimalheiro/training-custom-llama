@@ -169,7 +169,7 @@ class InstructDataLoader:
             labels = pad_sequence(
                 labels,
                 batch_first=True,
-                padding_value=-100
+                padding_value=config.ignore_index
             )
             if ids.size(1) > sequence_length:
                 ids  = ids[:, -sequence_length:]

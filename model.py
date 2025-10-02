@@ -236,6 +236,7 @@ class Transformer(nn.Module):
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
         self.is_rope_cis = config.is_rope_cis
+        self.ignore_index = config.ignore_index
 
         if self.is_rope_cis:
             rope_freqs = precompute_rope_freqs_complex(
@@ -290,7 +291,7 @@ class Transformer(nn.Module):
         if labels is not None:
             logits = logits.view(-1, logits.size(-1))  # (batch_size * sequence_length, num_classes)
             labels = labels.view(-1)  # (batch_size * sequence_length)
-            loss = nn.CrossEntropyLoss(ignore_index=-100)(logits, labels)
+            loss = nn.CrossEntropyLoss(ignore_index=self.ignore_index)(logits, labels)
 
         if loss is not None:
             return {'logits': logits, 'loss': loss}
@@ -570,6 +571,7 @@ class ModelConfig:
     vocab_size: int = None
     pad_token_id: int = None
     stop_tokens: object = None
+    ignore_index: int = None
 
     def __repr__(self):
         return json.dumps(self.to_dict(), indent=4)

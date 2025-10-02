@@ -79,6 +79,9 @@ class TrainConfig(BaseSettings):
     tokenizer_checkpoint_path: str = Field(alias='TOKENIZER_CHECKPOINT_PATH')
     huggingface_tokenizer: bool = Field(default=False, alias='HUGGINGFACE_TOKENIZER')
 
+    # value to mask the padded tokens in the loss calculation
+    ignore_index: int = Field(default=-100, alias='IGNORE_INDEX')
+
     # train config
     training_precision: TrainingPrecision = Field(deafult=TrainingPrecision.BF16, alias='TRAINING_PRECISION')
     training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')

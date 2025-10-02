@@ -111,7 +111,7 @@ def tokenize(doc):
         if is_assistant:
             labels.extend(tok_ids)
         else:
-            labels.extend([-100] * len(tok_ids))
+            labels.extend([config.ignore_index] * len(tok_ids))
 
     push([bot], False)
     push([sh], False)
@@ -132,7 +132,7 @@ def tokenize(doc):
         push([eot], False)
 
     input_ids = np.array(tokens, dtype=np.uint32)
-    labels = np.array(labels[1:] + [-100], dtype=np.int32)
+    labels = np.array(labels[1:] + [config.ignore_index], dtype=np.int32)
 
     return { 'input_ids': input_ids, 'labels': labels }
 

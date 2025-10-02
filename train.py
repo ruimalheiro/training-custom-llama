@@ -107,6 +107,9 @@ wandb_project_name = config.wandb_project_name
 # tokenizer model path
 tokenizer_checkpoint_path = config.tokenizer_checkpoint_path
 
+# value to mask the padded tokens
+ignore_index = config.ignore_index
+
 # train config
 total_batch_size = config.total_batch_size
 max_lr = config.max_lr
@@ -168,7 +171,8 @@ model_config = ModelConfig(
     tokenizer = tokenizer,
     vocab_size = tokenizer.vocab_size,
     pad_token_id = tokenizer.pad_id,
-    stop_tokens = tokenizer.stop_tokens
+    stop_tokens = tokenizer.stop_tokens,
+    ignore_index = ignore_index
 )
 
 # Extra metadata to store when saving a checkpoint
@@ -593,7 +597,7 @@ with torch_profiler_context as prof:
                         with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                             loss = model(x, labels=y)['loss']
 
-                        n_valid = (y != -100).sum().float()
+                        n_valid = (y != ignore_index).sum().float()
                     val_loss_sum += loss * n_valid
                     val_tok_sum += n_valid
 
@@ -753,7 +757,7 @@ with torch_profiler_context as prof:
                     loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
                     loss_scaled += loss_distil / grad_accum_steps
 
-                n_valid = (y != -100).sum()
+                n_valid = (y != ignore_index).sum()
 
             if not torch.is_tensor(n_valid):
                 n_valid = torch.tensor(n_valid, device=device, dtype=loss.dtype)
