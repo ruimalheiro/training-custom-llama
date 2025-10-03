@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn.functional as F
 import json
-import inspect
 
 from torch import nn
 from dataclasses import dataclass
@@ -298,7 +297,7 @@ class Transformer(nn.Module):
         else:
             return logits
 
-    def configure_adamw_optimizer(self, weight_decay, learning_rate, device, betas=(0.9, 0.999), eps=1e-8, lora_weight_decay=0.0, is_master_process=True):
+    def build_optimizer_param_groups(self, weight_decay, lora_weight_decay=0.0, is_master_process=True):
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
 
         lora_names = [n for n in param_dict if n.endswith('.A') or n.endswith('.B')]
@@ -324,23 +323,18 @@ class Transformer(nn.Module):
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         num_lora_params = sum(p.numel() for p in lora_params)
 
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and 'cuda' in device
-
         total_trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
 
         if is_master_process:
-            print(f'\nOptimizer configuration:')
+            print(f'\nOptimizer param group configuration:')
             print('----------------------------------------')
             print(f'num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters')
             print(f'num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters')
             if lora_params:
                 print(f'num lora parameter tensors: {len(lora_params)}, with {num_lora_params:,} parameters')
-            print(f'using fused AdamW: {use_fused}')
-            print(f'trainable parameters: {total_trainable_params}')
+            print(f'trainable parameters: {total_trainable_params:,}')
 
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=list(betas), eps=eps, fused=use_fused)
-        return optimizer
+        return optim_groups
 
     def sample_top_p(self, probs, p):
         ''' Top P - Sorts the tokens from highest probabilities to lowest and calculates cumulative probabilities up to the cumulative >= p.

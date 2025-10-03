@@ -6,7 +6,7 @@ import argparse
 import math
 import copy
 import json
-
+import inspect
 
 from config import (
     config,
@@ -376,9 +376,13 @@ if use_torch_compile:
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model.compile()
 
+#### PREPARE OPTIMIZER OPTIMAL PARAM GROUPS
+optimizer_param_groups = model.build_optimizer_param_groups(weight_decay=weight_decay, is_master_process=is_master_process)
+
 #### PREPARE DDP / FSDP
 # for FSDP no need to move as that would actually cost more VRAM, instead let FSDP initialization alocate the shard to the device id (ddp_local_rank).
 if use_fsdp and dist.is_initialized():
+    log('\nWrapping the model in preparation for FSDP')
     model, raw_model = prepare_model_for_fsdp(model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model, _ = prepare_model_for_fsdp(dpo_ref_model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
@@ -388,18 +392,21 @@ else:
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model.to(device, dtype=model_dtype)
 
+    log('\nWrapping the model in preparation for DDP')
     model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model, _ = prepare_model_for_ddp(dpo_ref_model, ddp_local_rank)
 
 #### INIT OPTIMIZER
-optimizer = raw_model.configure_adamw_optimizer(
-    weight_decay=weight_decay,
-    learning_rate=max_lr,
-    betas=(0.9, 0.95),
+fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+use_fused = fused_available and 'cuda' in device
+
+optimizer = torch.optim.AdamW(
+    params=optimizer_param_groups,
+    lr=max_lr,
+    betas=[0.9, 0.95],
     eps=1e-8,
-    device=device,
-    is_master_process=is_master_process
+    fused=use_fused
 )
 if loaded_optimizer_state is not None:
     assert type(loaded_optimizer_state) == dict
@@ -423,17 +430,17 @@ if is_model_distillation:
     log(f'Finished loading teacher model on gpu: {ddp_rank}...', True)
 
 #### CONFIG SUMMARY
-
 total_tokens = train_loader.calculate_max_tokens()
 complete_max_steps = math.ceil(total_tokens / total_batch_size)
 
 if is_master_process:
-    current_lr = optimizer.param_groups[0]['lr']
-    scheduled_lr = cosine_scheduler(start_step, min_lr, max_lr, warmup_steps, max_steps)
-    print(f'LR stored in checkpoint: {current_lr:.4e}')
-    print(f'LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
     print(f'\n{training_stage.upper()} configuration:')
     print('----------------------------------------')
+    current_lr = optimizer.param_groups[0]['lr']
+    scheduled_lr = cosine_scheduler(start_step, min_lr, max_lr, warmup_steps, max_steps)
+    print(f'using fused AdamW: {use_fused}')
+    print(f'LR set in the optimizer: {current_lr:.4e}')
+    print(f'(scheduler) LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
     print(f'dataloader data path: "{dataloader_root_path}"')
     print(f'HellaSwag data path: "{hellaswag_path}"')
 
