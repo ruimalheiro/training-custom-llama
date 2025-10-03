@@ -419,7 +419,7 @@ if loaded_optimizer_state is not None:
 teacher_model = None
 if is_model_distillation:
     log(f'Loading teacher model on gpu: {ddp_rank}...', True)
-    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device).eval()
+    teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device, dtype=model_dtype).eval()
     log(f'Finished loading teacher model on gpu: {ddp_rank}...', True)
 
 #### CONFIG SUMMARY
@@ -698,6 +698,8 @@ with torch_profiler_context as prof:
                 top_p=1.0
             )
 
+        torch.cuda.reset_peak_memory_stats()
+
         model.train()
         optimizer.zero_grad(set_to_none=True)
         train_loss_local_sum = torch.tensor(0.0, device=device)
@@ -809,14 +811,23 @@ with torch_profiler_context as prof:
         dt = t0.elapsed_time(t1) / 1000.0
         tokens_per_sec = train_token_sum / dt
 
+        peak_allocated_mb = torch.cuda.max_memory_allocated(ddp_local_rank) / 1024**2
+        peak_reserved_mb = torch.cuda.max_memory_reserved(ddp_local_rank) / 1024**2
+        current_allocated_mb = torch.cuda.memory_allocated(ddp_local_rank) / 1024**2
+        current_reserved_mb = torch.cuda.memory_reserved(ddp_local_rank) / 1024**2
+
         if is_master_process:
-            log(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | last val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {tokens_per_sec:.2f}')
+            log(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {int(tokens_per_sec)} | alloc/res MiB: (peak) {peak_allocated_mb:.0f} / {peak_reserved_mb:.0f} (curr) {current_allocated_mb:.0f} / {current_reserved_mb:.0f}')
             wandb_metrics = {
                 'Train Loss': train_avg_loss,
                 'Learning rate': lr,
                 'Norm': norm,
                 'Step time (seconds)': dt,
-                'Tok/Sec': tokens_per_sec
+                'Tokens (per sec)': tokens_per_sec,
+                'Peak Alloc MiB': peak_allocated_mb,
+                'Peak Reserved MiB': peak_reserved_mb,
+                'Alloc MiB': current_allocated_mb,
+                'Reserved MiB': current_reserved_mb
             }
             if is_dpo_training:
                 log(dpo_metrics['str'])
@@ -827,7 +838,7 @@ with torch_profiler_context as prof:
             prof.step()
 
 if ddp:
-    dist.barrier(device_ids=[torch.cuda.current_device()])
+    dist.barrier(device_ids=[ddp_local_rank])
     destroy_process_group()
 
 wandb.finish()
