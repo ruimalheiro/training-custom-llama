@@ -447,7 +447,8 @@ if is_master_process:
         print(f'weights and biases project name: "{wandb_project_name}"')
 
     print(f'tokenizer loaded from: "{tokenizer_checkpoint_path}"')
-    print(f'training precision: {model_dtype}')
+    print(f'training precision: {config.training_precision.value}')
+    print(f'parameter dtype: {model_dtype}')
     print(f'using autocast: {use_autocast}')
     if use_autocast:
         print(f'autocast dtype: {autocast_dtype}')
