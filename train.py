@@ -27,8 +27,11 @@ from lr_schedulers import cosine_scheduler
 from distillation_utils import distillation_loss
 from wandb_utils import WandbWrapper
 from contextlib import nullcontext
-from torch.distributed.fsdp import MixedPrecision
 
+from torch.distributed.fsdp import (
+    MixedPrecision,
+    FullyShardedDataParallel as FSDP
+)
 from torch.profiler import (
     profile,
     ProfilerActivity,
@@ -696,15 +699,18 @@ with torch_profiler_context as prof:
                 wandb.log({'HellaSwag accuracy': acc_norm})
 
         if (step > 0 and step % generate_every_x_steps == 0) or last_step:
-            model.eval()
-            raw_model.test_dialogue_custom(
-                test_generation_prompts,
-                max_gen_len=max_test_gen_len,
-                device=device,
-                is_instruct=is_instruct_training,
-                temperature=0.0,
-                top_p=1.0
-            )
+            model_to_test = model if use_fsdp else raw_model
+            context_manager = FSDP.summon_full_params(model_to_test, writeback=False, offload_to_cpu=False) if use_fsdp else nullcontext()
+            model_to_test.eval()
+            with context_manager:
+                model_to_test.test_dialogue_custom(
+                    test_generation_prompts,
+                    max_gen_len=max_test_gen_len,
+                    device=device,
+                    is_instruct=is_instruct_training,
+                    temperature=0.0,
+                    top_p=1.0
+                )
 
         torch.cuda.reset_peak_memory_stats()
 
