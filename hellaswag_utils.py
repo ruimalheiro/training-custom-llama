@@ -11,7 +11,16 @@ def load_hellaswag_file(path, ddp, is_master_process, size=None):
         return {
             'tokens': torch.tensor(example['tokens'], dtype=torch.long),
             'mask': torch.tensor(example['mask'], dtype=torch.long),
-            'label': int(example['label'])
+            'label': int(example['label']),
+            'valid': True
+        }
+
+    def create_dummy(shards):
+        return {
+            'tokens': torch.zeros_like(shards[0][0]['tokens']) if shards and shards[0] else torch.zeros((4, 2), dtype=torch.long),
+            'mask': torch.ones_like(shards[0][0]['mask'])   if shards and shards[0] else torch.ones((4, 2), dtype=torch.long),
+            'label': -1,
+            'valid': False
         }
 
     world_size = dist.get_world_size() if ddp else 1
@@ -27,8 +36,15 @@ def load_hellaswag_file(path, ddp, is_master_process, size=None):
         shard_size = (len(data) + world_size - 1) // world_size
         shards = [data[i * shard_size : (i+1) * shard_size] for i in range(world_size)]
 
-        while len(shards) < world_size: # pad with empty shards if necessary
+        while len(shards) < world_size: # number of shards must be equal to the world size
             shards.append([])
+
+        # need to pad as each shard needs to have same size so all ranks call forward()
+        dummy = create_dummy(shards)
+        for i in range(world_size):
+            target = shard_size - len(shards[i])
+            if target > 0:
+                shards[i].extend(need * [dummy])
     else:
         shards = [None]
 

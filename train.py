@@ -668,7 +668,7 @@ with torch_profiler_context as prof:
             num_correct_norm = 0
             num_total = 0
             for example in tqdm(HELLASWAG_DATA, 'HellaSwag validation', unit=' examples', disable=not is_master_process):
-                tokens, mask, label = example.get('tokens'), example.get('mask'), example.get('label')
+                tokens, mask, label, valid = example['tokens'], example['mask'], example['label'], example['valid']
                 tokens = tokens.to(device)
                 mask = mask.to(device)
 
@@ -677,10 +677,10 @@ with torch_profiler_context as prof:
                     with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                         logits = model(tokens)
 
+                if valid: # Some examples might be dummy in FSDP
                     predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
-
-                num_total += 1
-                num_correct_norm += int(predicted_correct == label)
+                    num_total += 1
+                    num_correct_norm += int(predicted_correct == label)
 
             # Aggregates counts across all GPU processes (in DDP) to compute global accuracy.
             if ddp:
