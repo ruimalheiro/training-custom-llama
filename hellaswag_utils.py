@@ -44,7 +44,7 @@ def load_hellaswag_file(path, ddp, is_master_process, size=None):
         for i in range(world_size):
             target = shard_size - len(shards[i])
             if target > 0:
-                shards[i].extend(need * [dummy])
+                shards[i].extend(target * [dummy])
     else:
         shards = [None]
 
