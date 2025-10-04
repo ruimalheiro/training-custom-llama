@@ -1,69 +1,46 @@
 import json
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 
 
-def iterate_hellaswag_val_examples(data_root, size=None):
-    i = 0
-    with open(f'{data_root}/hellaswag_val.jsonl', 'r') as f:
-        for line in f:
-            example = json.loads(line)
-            yield example
-            i += 1
-            if size and i == size:
-                break
-
-
-def prepare_hellaswag_example(example, tokenizer):
-    """
-    Sample example from hellaswag (without some of the metadata):
-        {
-          "ctx": "A man is sitting on a roof. he",
-          "label": 3,
-          "endings": [
-            "is using wrap to wrap a pair of skis.",
-            "is ripping level tiles off.",
-            "is holding a rubik's cube.",
-            "starts pulling up roofing on a roof."
-          ]
+def load_hellaswag_file(path, ddp, is_master_process, size=None):
+    # Loads the file and broadcasts to other ranks
+    def prepare_line(line):
+        example = json.loads(line)
+        return {
+            'tokens': torch.tensor(example['tokens'], dtype=torch.long),
+            'mask': torch.tensor(example['mask'], dtype=torch.long),
+            'label': int(example['label'])
         }
-    """
-    context = example['ctx']
-    label = example['label'] # Index for the correct completion
-    endings = example['endings'] # Candidates - always 4
 
-    context_tokens = tokenizer.encode(context)
+    world_size = dist.get_world_size() if ddp else 1
 
-    data = {
-        'context_tokens': context_tokens,
-        'label': label,
-        'ending_tokens': []
-    }
+    shards = None
+    if is_master_process:
+        # master builds the shards
+        with open(f'{path}/hellaswag_val.jsonl', 'r') as f:
+            data = [prepare_line(line) for line in f]
+            if size:
+                data = data[:size]
 
-    tokens_rows = []
-    mask_rows = []
-    for ending in endings:
-        ending_tokens = tokenizer.encode(ending)
-        tokens_rows.append(context_tokens + ending_tokens)
+        shard_size = (len(data) + world_size - 1) // world_size
+        shards = [data[i * shard_size : (i+1) * shard_size] for i in range(world_size)]
 
-        mask_row = torch.cat([torch.zeros(len(context_tokens)), torch.ones(len(ending_tokens))])
-        mask_rows.append(mask_row)
+        while len(shards) < world_size: # pad with empty shards if necessary
+            shards.append([])
+    else:
+        shards = [None]
 
-        data['ending_tokens'].append(ending_tokens)
+    if ddp:
+        # scatter the shards for respective rank
+        buffer_obj = [None]
+        dist.scatter_object_list(buffer_obj, scatter_object_input_list=shards if is_master_process else None, src=0)
+        data = buffer_obj[0]
+    else:
+        data = shards[0]
 
-
-    # rows can have different lengths so pick max for row length.
-    max_len = max(len(row) for row in tokens_rows)
-
-    # (4 candidates * max length)
-    tokens = torch.zeros((4, max_len), dtype=torch.long)
-    mask = torch.zeros((4, max_len), dtype=torch.long)
-    for i, (tokens_row, mask_row) in enumerate(zip(tokens_rows, mask_rows)):
-        tokens[i, :len(tokens_row)] = torch.tensor(tokens_row)
-        mask[i, :len(mask_row)] = mask_row.clone().detach()
-
-    return data, tokens, mask, label
-
+    return data
 
 def estimate_correct_candidate_selection(tokens, mask, logits):
     # align tokens mask and logits (remove first token in tokens/mask and last logit in logits)

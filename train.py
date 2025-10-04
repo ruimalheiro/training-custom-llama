@@ -60,8 +60,7 @@ from model_utils import (
     clip_grad_norm
 )
 from hellaswag_utils import (
-    iterate_hellaswag_val_examples,
-    prepare_hellaswag_example,
+    load_hellaswag_file,
     estimate_correct_candidate_selection
 )
 from dpo_utils import (
@@ -314,6 +313,9 @@ train_loader, val_loader = init_data_loaders(
 if loaded_train_loader_state is not None and loaded_val_loader_state is not None:
     train_loader.load_state_dict(loaded_train_loader_state)
     val_loader.load_state_dict(loaded_val_loader_state)
+
+#### HellaSwag data
+HELLASWAG_DATA = load_hellaswag_file(hellaswag_path, ddp, is_master_process, size=hellaswag_number_of_examples)
 
 #### INIT MODEL AND TRAINING SETUP
 model = Transformer(model_config)
@@ -665,12 +667,8 @@ with torch_profiler_context as prof:
             model.eval()
             num_correct_norm = 0
             num_total = 0
-            for i, example in tqdm(enumerate(iterate_hellaswag_val_examples(hellaswag_path, size=hellaswag_number_of_examples)), 'HellaSwag validation', unit=' examples', disable=not is_master_process):
-                # if i % ddp_world_size == ddp_rank (gpu itself), process.
-                if i % ddp_world_size != ddp_rank:
-                    continue
-
-                _, tokens, mask, label = prepare_hellaswag_example(example, tokenizer)
+            for example in tqdm(HELLASWAG_DATA, 'HellaSwag validation', unit=' examples', disable=not is_master_process):
+                tokens, mask, label = example.get('tokens'), example.get('mask'), example.get('label')
                 tokens = tokens.to(device)
                 mask = mask.to(device)
 
