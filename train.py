@@ -119,6 +119,7 @@ min_lr = config.min_lr
 warmup_steps = config.warmup_steps
 weight_decay = config.weight_decay
 max_steps = config.max_steps
+adamw_betas = config.adamw_betas
 early_stopping_patience = config.early_stopping_patience
 early_stopping_patience_skip_steps = config.early_stopping_patience_skip_steps
 dpo_beta = config.dpo_beta
@@ -409,7 +410,7 @@ use_fused = fused_available and 'cuda' in device
 optimizer = torch.optim.AdamW(
     params=optimizer_param_groups,
     lr=max_lr,
-    betas=[0.9, 0.95],
+    betas=adamw_betas,
     eps=1e-8,
     fused=use_fused
 )
@@ -441,10 +442,11 @@ complete_max_steps = math.ceil(total_tokens / total_batch_size)
 if is_master_process:
     print(f'\n{training_stage.upper()} configuration:')
     print('----------------------------------------')
-    current_lr = optimizer.param_groups[0]['lr']
+    current_lr, betas = optimizer.param_groups[0]['lr'], optimizer.param_groups[0]['betas']
     scheduled_lr = cosine_scheduler(start_step, min_lr, max_lr, warmup_steps, max_steps)
     print(f'using fused AdamW: {use_fused}')
     print(f'LR set in the optimizer: {current_lr:.4e}')
+    print(f'betas for AdamW: {betas}')
     print(f'(scheduler) LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
     print(f'dataloader data path: "{dataloader_root_path}"')
     print(f'HellaSwag data path: "{hellaswag_path}"')

@@ -1,6 +1,7 @@
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
 from enum import Enum
+from typing import Tuple
 
 class TrainingStage(str, Enum):
     PRETRAIN = 'pretrain'
@@ -91,6 +92,7 @@ class TrainConfig(BaseSettings):
     warmup_steps: int = Field(alias='WARMUP_STEPS')
     weight_decay: float = Field(alias='WEIGHT_DECAY')
     max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
+    adamw_betas: Tuple[float, float] = Field(default=(0.9, 0.95), alias='ADAMW_BETAS')
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
     dpo_beta: float = Field(default=0.1, alias='DPO_BETA')
