@@ -1,7 +1,7 @@
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
 from enum import Enum
-from typing import Tuple
+from typing import Tuple, Annotated
 
 class TrainingStage(str, Enum):
     PRETRAIN = 'pretrain'
@@ -20,21 +20,21 @@ class FSDPShardingStrategy(str, Enum):
 
 class TrainConfig(BaseSettings):
     # third party envs
-    wandb_api_key: str | None = Field(default=None, alias='WANDB_API_KEY')
-    hf_token: str | None = Field(default=None, alias='HF_TOKEN')
+    wandb_api_key: Annotated[str | None, Field(alias='WANDB_API_KEY')] = None
+    hf_token: Annotated[str | None, Field(alias='HF_TOKEN')] = None
     hf_home: str = Field(default='./cache', alias='HF_HOME')
 
     # datasets
     pretrain_dataset_mix_file: str = Field(alias='HF_PRETRAIN_DATASET_MIX_FILE')
     pretrain_dataset_target_path: str = Field(alias='HF_PRETRAIN_DATASET_TARGET_PATH')
 
-    instruct_dataset_mix_file: str | None = Field(default=None, alias='HF_INSTRUCT_DATASET_MIX_FILE')
+    instruct_dataset_mix_file: Annotated[str | None, Field(alias='HF_INSTRUCT_DATASET_MIX_FILE')] = None
     instruct_dataset_target_path: str = Field(alias='HF_INSTRUCT_DATASET_TARGET_PATH')
 
-    dpo_dataset_mix_file: str | None = Field(default=None, alias='HF_DPO_DATASET_MIX_FILE')
+    dpo_dataset_mix_file: Annotated[str | None, Field(alias='HF_DPO_DATASET_MIX_FILE')] = None
     dpo_dataset_target_path: str = Field(alias='HF_DPO_DATASET_TARGET_PATH')
 
-    hf_include_source_id: bool = Field(defaulf=False, alias='HF_INCLUDE_SOURCE_ID')
+    hf_include_source_id: bool = Field(default=False, alias='HF_INCLUDE_SOURCE_ID')
 
     # processes and batch sizes
     number_of_cpu_processes: int = Field(default=0, alias='NUMBER_OF_CPU_PROCESSES')
@@ -84,7 +84,7 @@ class TrainConfig(BaseSettings):
     ignore_index: int = Field(default=-100, alias='IGNORE_INDEX')
 
     # train config
-    training_precision: TrainingPrecision = Field(deafult=TrainingPrecision.BF16, alias='TRAINING_PRECISION')
+    training_precision: TrainingPrecision = Field(default=TrainingPrecision.BF16, alias='TRAINING_PRECISION')
     training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')
     max_lr: float = Field(alias='MAX_LR')
@@ -107,7 +107,7 @@ class TrainConfig(BaseSettings):
     lora_target_modules: list[str] = Field(alias='LORA_TARGET_MODULES')
     use_torch_compile: bool = Field(default=False, alias='USE_TORCH_COMPILE') # Will add more options later.
     use_fsdp: bool = Field(default=False, alias='USE_FSDP')
-    fsdp_sharding_strategy: FSDPShardingStrategy = Field(deafult=FSDPShardingStrategy.ZERO_3, alias='FSDP_SHARDING_STRATEGY')
+    fsdp_sharding_strategy: FSDPShardingStrategy = Field(default=FSDPShardingStrategy.ZERO_3, alias='FSDP_SHARDING_STRATEGY')
 
     # validation
     validate_every_x_steps: int = Field(alias='VALIDATE_EVERY_X_STEPS')
