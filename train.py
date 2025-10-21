@@ -348,9 +348,8 @@ if lora_enabled and not is_lora_checkpoint:
         is_master_process=is_master_process
     )
 
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.set_float32_matmul_precision('high')
+torch.backends.cuda.matmul.fp32_precision = 'tf32'
+torch.backends.cudnn.conv.fp32_precision = 'tf32'
 
 #### BATCH SIZE ASSERTIONS
 
