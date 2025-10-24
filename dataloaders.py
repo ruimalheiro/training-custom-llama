@@ -365,7 +365,7 @@ def init_data_loaders(
 ):
     if training_stage == TrainingStage.PRETRAIN:
         if is_master_process:
-            print('Pretrain Data Loaders:')
+            print('\nPretrain Data Loaders:')
             print('----------------------------------------')
 
         train_loader = PretrainDataLoader(
@@ -392,7 +392,7 @@ def init_data_loaders(
         assert pad_id is not None
 
         if is_master_process:
-            print('Instruct Finetuning Data Loaders:')
+            print('\nInstruct Finetuning Data Loaders:')
             print('----------------------------------------')
 
         train_loader = InstructDataLoader(
@@ -423,7 +423,7 @@ def init_data_loaders(
         assert pad_id is not None
 
         if is_master_process:
-            print('Direct Preference Optimization Data Loaders:')
+            print('\nDirect Preference Optimization Data Loaders:')
             print('----------------------------------------')
 
         train_loader = DirectPreferenceOptimizationDataLoader(
