@@ -27,7 +27,13 @@ from lr_schedulers import cosine_scheduler
 from distillation_utils import distillation_loss
 from wandb_utils import WandbWrapper
 from contextlib import nullcontext
+from types import SimpleNamespace
 
+from torch.optim import AdamW
+from torch.distributed import (
+    broadcast,
+    destroy_process_group
+)
 from torch.distributed.fsdp import (
     MixedPrecision,
     FullyShardedDataParallel as FSDP
@@ -37,10 +43,6 @@ from torch.profiler import (
     ProfilerActivity,
     schedule,
     tensorboard_trace_handler
-)
-from torch.distributed import (
-    broadcast,
-    destroy_process_group
 )
 from ddp_utils import (
     init_multi_gpu,
@@ -57,7 +59,8 @@ from model_utils import (
     load_checkpoint,
     load_model_state,
     load_optimizer_state,
-    clip_grad_norm
+    clip_grad_norm,
+    log_workload_summary
 )
 from hellaswag_utils import (
     load_hellaswag_file,
@@ -74,23 +77,13 @@ from dpo_utils import (
 # set training stage
 training_stage = config.training_stage
 
-is_pretraining = True if training_stage == TrainingStage.PRETRAIN else False
-is_instruct_training = True if training_stage == TrainingStage.INSTRUCT else False
-is_dpo_training = True if training_stage == TrainingStage.DPO else False
+is_pretraining = config.is_pretraining
+is_instruct_training = config.is_instruct_training
+is_dpo_training = config.is_dpo_training
 
 # datasets path / save checkpoints path
-if is_pretraining:
-    dataloader_root_path = config.pretrain_dataloader_root_path
-    save_checkpoints_path = config.pretrain_save_checkpoints_path
-elif is_instruct_training:
-    dataloader_root_path = config.instruct_dataloader_root_path
-    save_checkpoints_path = config.instruct_save_checkpoints_path
-elif is_dpo_training:
-    dataloader_root_path = config.dpo_dataloader_root_path
-    save_checkpoints_path = config.dpo_save_checkpoints_path
-else:
-    raise ValueError('Invalid training stage')
-
+dataloader_root_path = config.dataloader_root_path
+save_checkpoints_path = config.save_checkpoints_path
 hellaswag_path = config.hellaswag_path
 
 # load path
@@ -113,6 +106,8 @@ tokenizer_checkpoint_path = config.tokenizer_checkpoint_path
 ignore_index = config.ignore_index
 
 # train config
+seed = config.seed
+device_type = config.device_type.value
 total_batch_size = config.total_batch_size
 max_lr = config.max_lr
 min_lr = config.min_lr
@@ -136,6 +131,13 @@ use_torch_compile = config.use_torch_compile
 use_fsdp = config.use_fsdp
 fsdp_sharding_strategy = config.fsdp_sharding_strategy
 
+# precision, autocast and scaler
+use_autocast = config.use_autocast
+scaler = config.scaler
+model_dtype = config.model_dtype
+autocast_dtype = config.autocast_dtype
+fsdp_mp = config.fsdp_mp
+
 # validation
 validate_every_x_steps = config.validate_every_x_steps
 val_steps = config.val_steps
@@ -153,7 +155,6 @@ test_generation_prompts = test_prompts_data[training_stage.value]
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
 # model config
-
 assert config.dim % config.n_heads == 0, f'"dim" ({config.dim}) must be divisible by "n_heads" ({config.n_heads})'
 assert config.n_kv_heads <= config.n_heads, f'"n_kv_heads" ({config.n_kv_heads}) must be less or equal to "n_heads" ({config.n_heads})'
 assert config.n_heads % config.n_kv_heads == 0, f'"n_heads" ({config.n_heads}) must be divisible by n_kv_heads" ({config.n_kv_heads})'
@@ -195,42 +196,13 @@ parser.add_argument('--start-step', type=int, default=None, help='Starting step 
 args = parser.parse_args()
 
 #### INIT DISTRIBUTED DATA PARALLEL (DDP)
-ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type = init_multi_gpu(seed=42)
+ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device = init_multi_gpu(seed, device_type)
 
-# print helper
+# LOG HELPER
 def log(content, force=False):
+    global is_master_process
     if is_master_process or force:
         print(content)
-
-#### TRAINING PRECISION, AUTOCAST AND SCALER
-if config.training_precision == TrainingPrecision.BF16:
-    use_autocast = True
-    scaler = None
-    model_dtype = torch.float32
-    autocast_dtype = torch.bfloat16
-    fsdp_mp = MixedPrecision(
-        param_dtype=torch.float32,
-        reduce_dtype=torch.bfloat16,
-        buffer_dtype=torch.bfloat16
-    ) if use_fsdp else None
-elif config.training_precision == TrainingPrecision.FP16:
-    use_autocast = True
-    scaler = torch.amp.GradScaler(device_type) # need gradscaler when fp16
-    model_dtype = torch.float32
-    autocast_dtype = torch.float16
-    fsdp_mp = MixedPrecision(
-        param_dtype=torch.float32,
-        reduce_dtype=torch.float16,
-        buffer_dtype=torch.float16
-    ) if use_fsdp else None
-elif config.training_precision == TrainingPrecision.FP32:
-    use_autocast = False
-    scaler = None
-    model_dtype = torch.float32
-    autocast_dtype = torch.float32
-    fsdp_mp = None
-else:
-    raise ValueError('Invalid training precision')
 
 #### INIT WANDB wrapper
 wandb = WandbWrapper(enabled=wandb_enabled, is_master_process=is_master_process)
@@ -364,7 +336,7 @@ grad_accum_steps = total_batch_size // (model_config.max_batch_size * model_conf
 assert total_batch_size == (model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps)
 
 # COUNT PARAMS
-model_params = model.get_parameters_count()
+model_params_counts = model.get_parameters_count()
 
 # DPO (Direct Preference Optimization) reference model setup
 dpo_ref_model = None
@@ -387,7 +359,9 @@ optimizer_param_groups = model.build_optimizer_param_groups(weight_decay=weight_
 #### PREPARE DDP / FSDP
 # for FSDP no need to move as that would actually cost more VRAM, instead let FSDP initialization alocate the shard to the device id (ddp_local_rank).
 if use_fsdp and dist.is_initialized():
-    log('\nWrapping the model in preparation for FSDP')
+    log('\nFSDP')
+    log('----------------------------------------')
+    log('Wrapping the model in preparation for FSDP')
     model, raw_model = prepare_model_for_fsdp(model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model, _ = prepare_model_for_fsdp(dpo_ref_model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
@@ -397,16 +371,19 @@ else:
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model.to(device, dtype=model_dtype)
 
-    log('\nWrapping the model in preparation for DDP')
-    model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
-    if is_dpo_training and dpo_ref_model:
-        dpo_ref_model, _ = prepare_model_for_ddp(dpo_ref_model, ddp_local_rank)
+    if dist.is_initialized():
+        log('\nDDP')
+        log('----------------------------------------')
+        log('Wrapping the model in preparation for DDP')
+        model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
+        if is_dpo_training and dpo_ref_model:
+            dpo_ref_model, _ = prepare_model_for_ddp(dpo_ref_model, ddp_local_rank)
 
 #### INIT OPTIMIZER
-fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+fused_available = 'fused' in inspect.signature(AdamW).parameters
 use_fused = fused_available and 'cuda' in device
 
-optimizer = torch.optim.AdamW(
+optimizer = AdamW(
     params=optimizer_param_groups,
     lr=max_lr,
     betas=adamw_betas,
@@ -434,95 +411,26 @@ if is_model_distillation:
     teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device, dtype=model_dtype).eval()
     log(f'Finished loading teacher model on gpu: {ddp_rank}...', True)
 
-#### CONFIG SUMMARY
+#### TRAINING LOOP
 total_tokens = train_loader.calculate_max_tokens()
 complete_max_steps = math.ceil(total_tokens / total_batch_size)
 
+# Workload summary
 if is_master_process:
-    print(f'\n{training_stage.upper()} configuration:')
-    print('----------------------------------------')
-    current_lr, betas = optimizer.param_groups[0]['lr'], optimizer.param_groups[0]['betas']
-    scheduled_lr = cosine_scheduler(start_step, min_lr, max_lr, warmup_steps, max_steps)
-    print(f'using fused AdamW: {use_fused}')
-    print(f'LR set in the optimizer: {current_lr:.4e}')
-    print(f'betas for AdamW: {betas}')
-    print(f'(scheduler) LR that will be applied for step {start_step}: {scheduled_lr:.4e}')
-    print(f'dataloader data path: "{dataloader_root_path}"')
-    print(f'HellaSwag data path: "{hellaswag_path}"')
+    log_workload_summary(SimpleNamespace(
+        checkpoint=checkpoint,
+        optimizers=[('adamw', optimizer)],
+        start_step=start_step,
+        model_params_counts=model_params_counts,
+        ddp_world_size=ddp_world_size,
+        grad_accum_steps=grad_accum_steps,
+        total_tokens=total_tokens,
+        complete_max_steps=complete_max_steps,
+        test_generation_prompts=test_generation_prompts,
+        model_config=model_config.to_dict(),
+        **config.model_dump(),
+    ))
 
-    if checkpoint is not None:
-        print(f'loading checkpoint data path: "{load_checkpoints_path}"')
-
-    if save_checkpoints:
-        print(f'saving checkpoint data path: "{save_checkpoints_path}"')
-
-    if wandb_enabled:
-        print(f'weights and biases project name: "{wandb_project_name}"')
-
-    print(f'tokenizer loaded from: "{tokenizer_checkpoint_path}"')
-    print(f'training precision: {config.training_precision.value}')
-    print(f'parameter dtype: {model_dtype}')
-    print(f'using autocast: {use_autocast}')
-    if use_autocast:
-        print(f'autocast dtype: {autocast_dtype}')
-    print(f'total batch size: {total_batch_size}')
-    print(f'max learning rate: {max_lr}')
-    print(f'min learning rate: {min_lr}')
-    print(f'warmup steps: {warmup_steps}')
-    print(f'weight decay: {weight_decay}')
-    print(f'max steps: {max_steps}')
-    print(f'using torch compile: {use_torch_compile}')
-    print(f'Using FSDP: {use_fsdp}')
-    if use_fsdp:
-        print(f'FSDP sharding strategy: {fsdp_sharding_strategy.value}')
-
-    if is_pretraining or is_instruct_training:
-        # For pretraining according to the Chinchilla paper ~20.0 is reasonable. For instruct: ~0.2 to ~0.5 is reasonable
-        m_factor = 20.0 if is_pretraining else 0.3
-        tokens_required_for_model_size = int(model_params * m_factor)
-        steps_needed = math.ceil(tokens_required_for_model_size / total_batch_size)
-        tokens_coverage = max_steps * model_config.max_batch_size * model_config.max_seq_len * ddp_world_size * grad_accum_steps
-        print(f'model parameter count: {model_params}')
-        print(f'number of tokens in the dataset: {total_tokens}')
-        print(f'full dataset steps: {complete_max_steps}')
-        print(f'heuristic token target [model parameter count * {m_factor}]: {tokens_required_for_model_size}')
-        print(f'dataset covers heuristic? {"YES" if total_tokens >= tokens_required_for_model_size else "NO"}')
-        print(f'number of steps needed for target: {steps_needed}')
-        print(f'configured "max steps" corresponds to {round((max_steps / complete_max_steps) * 100,2)}% of total tokens (~{tokens_coverage})')
-        print(f'configured "max steps" covers heuristic? {"YES" if max_steps >= steps_needed else "NO"}')
-
-    if is_dpo_training:
-        print(f'DPO beta: {dpo_beta}')
-
-    print(f'early stopping patience: {early_stopping_patience}')
-
-    if is_model_distillation:
-        print(f'performing model distillation: {is_model_distillation}')
-        print(f'distillation temperature set to: {distillation_temperature}')
-        print(f'teacher model checkpoint: {teacher_model_checkpoint}')
-
-    print('\nEvaluation Config')
-    print('----------------------------------------')
-    print(f'number of steps between validation: {validate_every_x_steps}')
-    print(f'number of validating steps: {val_steps}')
-    print(f'number of steps between HellaSwag validation: {hellaswag_every_x_steps}')
-    print(f'number of HellaSwag examples: {hellaswag_number_of_examples}')
-    print(f'number of steps between model output generations: {generate_every_x_steps}')
-    print(f'max length for the generated text from each prompt: {max_test_gen_len}')
-    print(f'generation prompts:')
-    for example in test_generation_prompts:
-        print(f'=> "{example}"')
-
-    print('\nDerived properties')
-    print('----------------------------------------')
-    print(f'gradient accumulation steps: {grad_accum_steps}')
-
-    if checkpoint is None:
-        print('\nModel config')
-        print('----------------------------------------')
-        print_dict(model_config.to_dict())
-
-#### TRAINING LOOP
 if ddp:
     dist.barrier(device_ids=[ddp_local_rank])
 

@@ -1,7 +1,14 @@
+import torch
+
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
 from enum import Enum
 from typing import Tuple, Annotated
+from torch.distributed.fsdp import MixedPrecision
+
+
+class DeviceType(str, Enum):
+    CUDA = 'cuda'
 
 class TrainingStage(str, Enum):
     PRETRAIN = 'pretrain'
@@ -84,6 +91,8 @@ class TrainConfig(BaseSettings):
     ignore_index: int = Field(default=-100, alias='IGNORE_INDEX')
 
     # train config
+    seed: int = Field(default=42, alias='SEED')
+    device_type: DeviceType = Field(default=DeviceType.CUDA, alias='DEVICE_TYPE')
     training_precision: TrainingPrecision = Field(default=TrainingPrecision.BF16, alias='TRAINING_PRECISION')
     training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')
@@ -132,6 +141,66 @@ class TrainConfig(BaseSettings):
     rope_theta: float = Field(default=500000.0, alias='ROPE_THETA')
     max_batch_size: int = Field(default=4, alias='MAX_BATCH_SIZE')
     max_seq_len: int = Field(default=1024, alias='MAX_SEQ_LEN')
+
+    #### DERIVED PROPERTIES ####
+    is_pretraining: bool = Field(default=False, repr=False)
+    is_instruct_training: bool = Field(default=False, repr=False)
+    is_dpo_training: bool = Field(default=False, repr=False)
+
+    dataloader_root_path: str = Field(default='', repr=False)
+    save_checkpoints_path: str = Field(default='', repr=False)
+
+    use_autocast: bool = Field(default=False, repr=False)
+    scaler: torch.amp.GradScaler | None = Field(default=None, repr=False)
+    model_dtype: torch.dtype | None = Field(default=None, repr=False)
+    autocast_dtype: torch.dtype | None = Field(default=None, repr=False)
+    fsdp_mp: MixedPrecision | None = Field(default=None, repr=False)
+
+    def model_post_init(self, __context: any) -> None:
+        self.is_pretraining = self.training_stage == TrainingStage.PRETRAIN
+        self.is_instruct_training = self.training_stage == TrainingStage.INSTRUCT
+        self.is_dpo_training = self.training_stage == TrainingStage.DPO
+
+        if self.is_pretraining:
+            self.dataloader_root_path = self.pretrain_dataloader_root_path
+            self.save_checkpoints_path = self.pretrain_save_checkpoints_path
+        elif self.is_instruct_training:
+            self.dataloader_root_path = self.instruct_dataloader_root_path
+            self.save_checkpoints_path = self.instruct_save_checkpoints_path
+        elif self.is_dpo_training:
+            self.dataloader_root_path = self.dpo_dataloader_root_path
+            self.save_checkpoints_path = self.dpo_save_checkpoints_path
+        else:
+            raise ValueError(f'Invalid training stage: {self.training_stage}')
+
+        if self.training_precision == TrainingPrecision.BF16:
+            self.use_autocast = True
+            self.scaler = None
+            self.model_dtype = torch.float32
+            self.autocast_dtype = torch.bfloat16
+            self.fsdp_mp = MixedPrecision(
+                param_dtype=torch.float32,
+                reduce_dtype=torch.bfloat16,
+                buffer_dtype=torch.bfloat16
+            ) if self.use_fsdp else None
+        elif self.training_precision == TrainingPrecision.FP16:
+            self.use_autocast = True
+            self.scaler = torch.amp.GradScaler(self.device_type) # need gradscaler when fp16
+            self.model_dtype = torch.float32
+            self.autocast_dtype = torch.float16
+            self.fsdp_mp = MixedPrecision(
+                param_dtype=torch.float32,
+                reduce_dtype=torch.float16,
+                buffer_dtype=torch.float16
+            ) if self.use_fsdp else None
+        elif self.training_precision == TrainingPrecision.FP32:
+            self.use_autocast = False
+            self.scaler = None
+            self.model_dtype = torch.float32
+            self.autocast_dtype = torch.float32
+            self.fsdp_mp = None
+        else:
+            raise ValueError('Invalid training precision')
 
     model_config = ConfigDict(
         env_file = '.env',

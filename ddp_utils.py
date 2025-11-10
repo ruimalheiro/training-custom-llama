@@ -14,11 +14,12 @@ from model import TransformerBlock
 
 os.environ.setdefault('TORCH_NCCL_ASYNC_ERROR_HANDLING', '1')
 
-def init_multi_gpu(seed=None):
+def init_multi_gpu(seed, device_type):
     ddp = int(os.environ.get('RANK', -1)) != -1
-    if ddp:
-        assert torch.cuda.is_available()
 
+    assert torch.cuda.is_available()
+
+    if ddp:
         ddp_rank = int(os.environ['RANK'])
         ddp_local_rank = int(os.environ['LOCAL_RANK'])
         ddp_world_size = int(os.environ['WORLD_SIZE'])
@@ -32,14 +33,9 @@ def init_multi_gpu(seed=None):
         ddp_rank = 0
         ddp_local_rank = 0
         ddp_world_size = 1
-        device = 'cpu'
-        is_master_process = True
-        if torch.cuda.is_available():
-            device = 'cuda'
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            device = 'mps'
 
-    device_type = 'cuda' if device.startswith('cuda') else 'cpu'
+        device = 'cuda'
+        is_master_process = True
 
     if is_master_process:
         print(f'\nDevice setup:')
@@ -52,12 +48,10 @@ def init_multi_gpu(seed=None):
         if ddp_world_size:
             print(f'DDP world size: {ddp_world_size}')
 
-    if seed is not None:
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
 
-    return ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device, device_type
+    return ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device
 
 
 def prepare_model_for_ddp(model, ddp_local_rank):

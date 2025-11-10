@@ -2,6 +2,7 @@ import os
 import json
 import torch
 import torch.distributed as dist
+import math
 
 from collections import OrderedDict
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -10,6 +11,8 @@ from torch.distributed.checkpoint.state_dict import (
     set_model_state_dict,
     StateDictOptions
 )
+from torch.optim import AdamW
+from lr_schedulers import cosine_scheduler
 
 
 def print_dict(config):
@@ -184,3 +187,92 @@ def clip_grad_norm(model, max_norm, is_fsdp=False):
     if is_fsdp:
         return torch.distributed.fsdp.FullyShardedDataParallel.clip_grad_norm_(model, max_norm)
     return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+
+def log_workload_summary(c):
+    print(f'\n{c.training_stage.upper()} configuration:')
+    print('----------------------------------------')
+    print('Optimizers:')
+    for name, optimizer in c.optimizers:
+        print(f'{name}:')
+        if isinstance(optimizer, AdamW):
+            current_lr, betas = optimizer.param_groups[0]['lr'], optimizer.param_groups[0]['betas']
+            scheduled_lr = cosine_scheduler(c.start_step, c.min_lr, c.max_lr, c.warmup_steps, c.max_steps)
+            print(f'    using fused AdamW: {optimizer.defaults["fused"]}')
+            print(f'    LR set in the optimizer: {current_lr:.4e}')
+            print(f'    betas for AdamW: {c.adamw_betas}')
+            print(f'    (scheduler) LR that will be applied for step {c.start_step}: {scheduled_lr:.4e}')
+        print('--')
+    print(f'dataloader data path: "{c.dataloader_root_path}"')
+    print(f'HellaSwag data path: "{c.hellaswag_path}"')
+
+    if c.checkpoint is not None:
+        print(f'loading checkpoint data path: "{c.load_checkpoints_path}"')
+
+    if c.save_checkpoints:
+        print(f'saving checkpoint data path: "{c.save_checkpoints_path}"')
+
+    if c.wandb_enabled:
+        print(f'weights and biases project name: "{c.wandb_project_name}"')
+
+    print(f'tokenizer loaded from: "{c.tokenizer_checkpoint_path}"')
+    print(f'training precision: {c.training_precision.value}')
+    print(f'parameter dtype: {c.model_dtype}')
+    print(f'using autocast: {c.use_autocast}')
+    if c.use_autocast:
+        print(f'autocast dtype: {c.autocast_dtype}')
+    print(f'total batch size: {c.total_batch_size}')
+    print(f'max learning rate: {c.max_lr}')
+    print(f'min learning rate: {c.min_lr}')
+    print(f'warmup steps: {c.warmup_steps}')
+    print(f'weight decay: {c.weight_decay}')
+    print(f'max steps: {c.max_steps}')
+    print(f'using torch compile: {c.use_torch_compile}')
+    print(f'Using FSDP: {c.use_fsdp}')
+    if c.use_fsdp:
+        print(f'FSDP sharding strategy: {c.fsdp_sharding_strategy.value}')
+
+    if c.is_pretraining or c.is_instruct_training:
+        # For pretraining according to the Chinchilla paper ~20.0 is reasonable. For instruct: ~0.2 to ~0.5 is reasonable
+        m_factor = 20.0 if c.is_pretraining else 0.3
+        tokens_required_for_model_size = int(c.model_params_counts * m_factor)
+        steps_needed = math.ceil(tokens_required_for_model_size / c.total_batch_size)
+        tokens_coverage = c.max_steps * c.max_batch_size * c.max_seq_len * c.ddp_world_size * c.grad_accum_steps
+        print(f'model parameter count: {c.model_params_counts:,}')
+        print(f'number of tokens in the dataset: {c.total_tokens:,}')
+        print(f'full dataset steps: {c.complete_max_steps}')
+        print(f'heuristic token target [model parameter count * {m_factor}]: {tokens_required_for_model_size:,}')
+        print(f'dataset covers heuristic? {"YES" if c.total_tokens >= tokens_required_for_model_size else "NO"}')
+        print(f'number of steps needed for target: {steps_needed}')
+        print(f'configured "max steps" corresponds to {round((c.max_steps / c.complete_max_steps) * 100,2)}% of total tokens (~{tokens_coverage:,})')
+        print(f'configured "max steps" covers heuristic? {"YES" if c.max_steps >= steps_needed else "NO"}')
+
+    if c.is_dpo_training:
+        print(f'DPO beta: {c.dpo_beta}')
+
+    print(f'early stopping patience: {c.early_stopping_patience}')
+
+    if c.is_model_distillation:
+        print(f'performing model distillation: {c.is_model_distillation}')
+        print(f'distillation temperature set to: {c.distillation_temperature}')
+        print(f'teacher model checkpoint: {c.teacher_model_checkpoint}')
+
+    print('\nDerived properties')
+    print('----------------------------------------')
+    print(f'gradient accumulation steps: {c.grad_accum_steps}')
+
+    if c.checkpoint is None:
+        print('\nModel config')
+        print('----------------------------------------')
+        print_dict(c.model_config)
+
+    print('\nEvaluation Config')
+    print('----------------------------------------')
+    print(f'number of steps between validation: {c.validate_every_x_steps}')
+    print(f'number of validating steps: {c.val_steps}')
+    print(f'number of steps between HellaSwag validation: {c.hellaswag_every_x_steps}')
+    print(f'number of HellaSwag examples: {c.hellaswag_number_of_examples}')
+    print(f'number of steps between model output generations: {c.generate_every_x_steps}')
+    print(f'max length for the generated text from each prompt: {c.max_test_gen_len}')
+    print(f'generation prompts:')
+    for example in c.test_generation_prompts:
+        print(f'=> "{example}"')
