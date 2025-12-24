@@ -371,6 +371,7 @@ else:
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model.to(device, dtype=model_dtype)
 
+    raw_model = model
     if dist.is_initialized():
         log('\nDDP')
         log('----------------------------------------')
@@ -419,6 +420,7 @@ complete_max_steps = math.ceil(total_tokens / total_batch_size)
 if is_master_process:
     log_workload_summary(SimpleNamespace(
         checkpoint=checkpoint,
+        load_checkpoints_path=load_checkpoints_path,
         optimizers=[('adamw', optimizer)],
         start_step=start_step,
         model_params_counts=model_params_counts,
