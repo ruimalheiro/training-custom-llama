@@ -141,6 +141,13 @@ class TrainConfig(BaseSettings):
     rope_theta: float = Field(default=500000.0, alias='ROPE_THETA')
     max_batch_size: int = Field(default=4, alias='MAX_BATCH_SIZE')
     max_seq_len: int = Field(default=1024, alias='MAX_SEQ_LEN')
+    is_moe: bool = Field(default=False, alias='IS_MOE')
+    moe_num_experts: int = Field(alias='MOE_NUM_EXPERTS')
+    moe_expert_dim: int = Field(alias='MOE_EXPERT_DIM')
+    moe_top_k: int = Field(alias='MOE_TOP_K')
+    moe_load_balancing_coef: float = Field(alias='MOE_LOAD_BALANCING_COEF')
+    moe_z_loss_coef: float = Field(alias='MOE_Z_LOSS_COEF')
+    moe_compute_stats: bool = Field(alias='MOE_COMPUTE_STATS')
 
     #### DERIVED PROPERTIES ####
     is_pretraining: bool = Field(default=False, repr=False)

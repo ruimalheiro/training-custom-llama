@@ -34,6 +34,9 @@ The implementation in this project is a bit different but the core ideas are the
 - LoRA configuration
 - Direct Preference Optimization (DPO)
 - Torch profiler
+- Mixture of Experts (MoE)
+  - Uses the existing FF module for the MLPs
+  - Load balancing + z-loss
 
 ## Instructions
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
@@ -61,7 +64,7 @@ The implementation in this project is a bit different but the core ideas are the
 - `wandb_utils` A wrapper for Weights & Biases.
 
 ## Setup
-- Create a python environment. Example with conda: `conda create -n my_env python=3.10.10`;
+- Create a python environment. Example with conda: `conda create -n my_env python=3.11`;
 - Activate the environment and run: `pip install -r requirements.txt`;
 - Download and prepare the data (Example pretraining / instruct fine-tuning):
   - For HellaSwag run:

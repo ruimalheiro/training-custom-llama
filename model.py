@@ -199,6 +199,127 @@ class FeedForward(nn.Module):
         c = F.silu(a) * b
         return self._proj_out(c)
 
+class MoEFeedForward(nn.Module):
+    def __init__(
+        self,
+        dim,
+        hidden_dim,
+        multiple_of,
+        ffn_dim_multiplier,
+        num_experts,
+        expert_dim,
+        top_k,
+        load_balancing_coef,
+        z_loss_coef,
+        compute_stats=False
+    ):
+        super(MoEFeedForward, self).__init__()
+
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.load_balancing_coef = load_balancing_coef
+        self.z_loss_coef = z_loss_coef
+        self.compute_stats = compute_stats
+
+        # stats buffers
+        self.register_buffer('acc_top1_counts', torch.zeros(num_experts, dtype=torch.int64), persistent=False)
+        self.register_buffer('acc_topk_counts', torch.zeros(num_experts, dtype=torch.int64), persistent=False)
+        self.register_buffer('acc_p_sum', torch.zeros(num_experts, dtype=torch.float32), persistent=False)
+        self.register_buffer('acc_tokens', torch.zeros((), dtype=torch.int64), persistent=False)
+
+        self.router = nn.Linear(dim, num_experts, bias=False)
+
+        self.experts = nn.ModuleList([
+            FeedForward(expert_dim, hidden_dim, multiple_of, ffn_dim_multiplier) for _ in range(num_experts)
+        ])
+
+    def reset_stats(self):
+        self.acc_top1_counts.zero_()
+        self.acc_topk_counts.zero_()
+        self.acc_p_sum.zero_()
+        self.acc_tokens.zero_()
+
+    def _accumulate_stats(self, top_k_index, topk_counts, p):
+        top1 = top_k_index[:, 0]
+        n_tokens = top_k_index.size(0)
+        top1_counts = torch.bincount(top1, minlength=self.num_experts).to(torch.int64)
+
+        self.acc_top1_counts.add_(top1_counts)
+        self.acc_topk_counts.add_(topk_counts)
+        self.acc_p_sum.add_(p.to(torch.float32) * n_tokens)
+        self.acc_tokens.add_(n_tokens)
+
+    def forward(self, x):
+        B, S, D = x.shape
+        x_flat = x.reshape(B * S, D)
+        y_flat = torch.zeros_like(x_flat)
+
+        logits = self.router(x_flat) # (B*S, E_logits)
+
+        top_k_logits, top_k_index = torch.topk(logits, k=self.top_k, dim=-1) # (B*S, E_logits) / (B*S, E_indexes)
+
+        top_k_probs = F.softmax(top_k_logits, dim=-1, dtype=x_flat.dtype)
+        all_probs = F.softmax(logits, dim=-1, dtype=x_flat.dtype)
+
+        # TOKEN LOAD BALANCE
+        # f
+        total_token_count_possible = B * S * self.top_k
+
+        topk_counts_i64 = torch.bincount(top_k_index.reshape(-1), minlength=self.num_experts).to(torch.int64)
+        counts_per_top_k_expert = topk_counts_i64.to(torch.float32)
+        f = counts_per_top_k_expert / max(1.0, total_token_count_possible)
+        # p
+        p = all_probs.mean(dim=0)
+        load_balance_loss = self.load_balancing_coef * self.num_experts * torch.sum(f * p)
+
+        # Z LOSS
+        z_loss = self.z_loss_coef * torch.mean(torch.logsumexp(logits, dim=-1) ** 2.0)
+
+        aux_loss = load_balance_loss + z_loss
+
+        # COMPUTE STATS
+        if self.compute_stats:
+            with torch.no_grad():
+                self._accumulate_stats(top_k_index, topk_counts_i64, p)
+
+        # PERFORMANCE
+        flat_top_k_index = top_k_index.reshape(-1)
+        flat_top_k_probs = top_k_probs.reshape(-1)
+        flat_token = torch.arange(B * S, device=x_flat.device).repeat_interleave(self.top_k)
+
+        order = torch.argsort(flat_top_k_index)
+        flat_top_k_index = flat_top_k_index.index_select(0, order)
+        flat_top_k_probs = flat_top_k_probs.index_select(0, order)
+        flat_token = flat_token.index_select(0, order)
+
+        counts = counts_per_top_k_expert.int()
+        offsets = torch.cumsum(counts, dim=0)
+        starts = torch.empty_like(offsets)
+        starts[0] = 0
+        starts[1:] = offsets[:-1]
+
+        for i in range(self.num_experts):
+            s_i = starts[i]
+            e_i = offsets[i]
+            if s_i == e_i:
+                if torch.is_grad_enabled():
+                    for p in self.experts[i].parameters(): # hack so the autograd graph considers the expert (otherwise error because of None grad)
+                        aux_loss = aux_loss + p.sum() * 0.0
+                continue
+
+            token_indexes = flat_token[s_i:e_i]
+
+            tokens_for_expert_e = x_flat.index_select(0, token_indexes)
+            expert_activations = self.experts[i](tokens_for_expert_e)
+            gate_activations = flat_top_k_probs[s_i:e_i].unsqueeze(-1)
+
+            activations = expert_activations * gate_activations
+            y_flat.index_add_(0, token_indexes, activations)
+
+        y_flat = y_flat.reshape(B, S, D)
+
+        return y_flat, aux_loss
+
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
         super(RMSNorm, self).__init__()
@@ -218,20 +339,40 @@ class TransformerBlock(nn.Module):
         self.n_heads = config.n_heads
         self.dim = config.dim
         self.attention = Attention(config)
-        self.feed_forward = FeedForward(
-            dim=config.dim,
-            hidden_dim=4 * config.dim,
-            multiple_of=config.multiple_of,
-            ffn_dim_multiplier=config.ffn_dim_multiplier
-        )
+        self.is_moe = config.is_moe
+
+        if config.is_moe:
+            self.feed_forward = MoEFeedForward(
+                dim=config.dim,
+                hidden_dim=4 * config.dim,
+                multiple_of=config.multiple_of,
+                ffn_dim_multiplier=config.ffn_dim_multiplier,
+                num_experts=config.moe_num_experts,
+                expert_dim=config.moe_expert_dim,
+                top_k=config.moe_top_k,
+                load_balancing_coef=config.moe_load_balancing_coef,
+                z_loss_coef=config.moe_z_loss_coef
+            )
+        else:
+            self.feed_forward = FeedForward(
+                dim=config.dim,
+                hidden_dim=4 * config.dim,
+                multiple_of=config.multiple_of,
+                ffn_dim_multiplier=config.ffn_dim_multiplier
+            )
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.ffn_norm = RMSNorm(config.dim, eps=config.norm_eps)
 
     def forward(self, x, start_position, rope_freqs, mask=None):
         hidden_state = x + self.attention(self.attention_norm(x), start_position, rope_freqs, mask)
-        output = hidden_state + self.feed_forward(self.ffn_norm(hidden_state))
-        return output
+        if self.is_moe:
+            ff, aux = self.feed_forward(self.ffn_norm(hidden_state))
+            output = hidden_state + ff
+        else:
+            output = hidden_state + self.feed_forward(self.ffn_norm(hidden_state))
+            aux = None
+        return output, aux
 
 class Transformer(nn.Module):
     def __init__(self, config):
@@ -300,8 +441,11 @@ class Transformer(nn.Module):
                 masked_positions = ~attention_mask.bool() # because torch flash attention expects true for masked.
                 mask = masked_positions[:, None, None, :] # torch flash attention expects dims [B, H, Q, K]
 
+        aux_loss_total = hidden_state.new_zeros(())
         for layer in self.layers:
-            hidden_state = layer(hidden_state, start_position, rope_freqs, mask)
+            hidden_state, aux = layer(hidden_state, start_position, rope_freqs, mask)
+            if aux is not None:
+                aux_loss_total = aux_loss_total + aux
 
         hidden_state = self.norm(hidden_state)
 
@@ -311,7 +455,8 @@ class Transformer(nn.Module):
         if labels is not None:
             logits = logits.view(-1, logits.size(-1))  # (batch_size * sequence_length, num_classes)
             labels = labels.view(-1)  # (batch_size * sequence_length)
-            loss = nn.CrossEntropyLoss(ignore_index=self.ignore_index)(logits, labels)
+            ce = nn.CrossEntropyLoss(ignore_index=self.ignore_index)(logits, labels)
+            loss = ce + (aux_loss_total / self.n_layers)
 
         if loss is not None:
             return {'logits': logits, 'loss': loss}
@@ -568,6 +713,34 @@ class Transformer(nn.Module):
         if return_text:
             return NUMBER_OF_PARAMETERS_LABEL
 
+    def set_moe_stats(self, enabled):
+        for m in self.modules():
+            if isinstance(m, MoEFeedForward):
+                m.compute_stats = enabled
+
+    def enable_moe_stats(self):
+        if self.config.is_moe and self.config.moe_compute_stats:
+            self.set_moe_stats(True)
+
+    def disable_moe_stats(self):
+        if self.config.is_moe and self.config.moe_compute_stats:
+            self.set_moe_stats(False)
+
+    def reset_moe_stats(self):
+        if self.config.is_moe and self.config.moe_compute_stats:
+            for m in self.modules():
+                if isinstance(m, MoEFeedForward):
+                    m.reset_stats()
+
+    def get_moe_stats(self):
+        if not self.config.is_moe or (not self.config.moe_compute_stats):
+            return []
+        stats = []
+        for layer_id, block in enumerate(self.layers):
+            if isinstance(block.feed_forward, MoEFeedForward):
+                stats.append((layer_id, block.feed_forward))
+        return stats
+
 
 @dataclass
 class ModelConfig:
@@ -587,6 +760,13 @@ class ModelConfig:
     pad_token_id: int = None
     stop_tokens: object = None
     ignore_index: int = None
+    is_moe: bool = False
+    moe_num_experts: int = None
+    moe_expert_dim: int = None
+    moe_top_k: int = None
+    moe_load_balancing_coef: float = None
+    moe_z_loss_coef: float = None
+    moe_compute_stats: bool = False
 
     def __repr__(self):
         return json.dumps(self.to_dict(), indent=4)
@@ -606,5 +786,12 @@ class ModelConfig:
             'max_batch_size': self.max_batch_size,
             'max_seq_len': self.max_seq_len,
             'pad_token_id': self.pad_token_id,
-            'stop_tokens': list(self.stop_tokens)
+            'stop_tokens': list(self.stop_tokens),
+            'is_moe': self.is_moe,
+            'moe_num_experts': self.moe_num_experts,
+            'moe_expert_dim': self.moe_expert_dim,
+            'moe_top_k': self.moe_top_k,
+            'moe_load_balancing_coef': self.moe_load_balancing_coef,
+            'moe_z_loss_coef': self.moe_z_loss_coef,
+            'moe_compute_stats': self.moe_compute_stats
         }
