@@ -186,12 +186,16 @@ def log(content, force=False):
 
 #### INIT WANDB wrapper
 wandb = WandbWrapper(enabled=wandb_enabled, is_master_process=is_master_process)
-wandb.init(wandb_project_name, config={
-    'batch_size': config.max_batch_size,
-    'sequence_length': config.max_seq_len,
-    'min_learning_rate': min_lr,
-    'max_learning_rate': max_lr,
-})
+wandb.init(
+    wandb_project_name,
+    job_name=config.wandb_run_name,
+    config={
+        'batch_size': config.max_batch_size,
+        'sequence_length': config.max_seq_len,
+        'min_learning_rate': min_lr,
+        'max_learning_rate': max_lr
+    }
+)
 
 #### LOAD CHECKPOINT
 load_checkpoints_path = None

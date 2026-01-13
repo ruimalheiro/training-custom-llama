@@ -82,6 +82,7 @@ class TrainConfig(BaseSettings):
     # wandb
     wandb_enabled: bool = Field(default=False, alias='WANDB_ENABLED')
     wandb_project_name: str = Field(alias='WANDB_PROJECT_NAME')
+    wandb_run_name: str = Field(default=None, alias='WANDB_RUN_NAME')
 
     # tokenizer model path
     tokenizer_checkpoint_path: str = Field(alias='TOKENIZER_CHECKPOINT_PATH')
