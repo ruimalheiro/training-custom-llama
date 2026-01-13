@@ -215,6 +215,7 @@ def log_workload_summary(c):
         print(f'weights and biases project name: "{c.wandb_project_name}"')
 
     print(f'tokenizer loaded from: "{c.tokenizer_checkpoint_path}"')
+    print(f'tokenizer vocab size: {c.model_config["vocab_size"]}')
     print(f'training precision: {c.training_precision.value}')
     print(f'parameter dtype: {c.model_dtype}')
     print(f'using autocast: {c.use_autocast}')
@@ -236,14 +237,19 @@ def log_workload_summary(c):
         m_factor = 20.0 if c.is_pretraining else 0.3
         tokens_required_for_model_size = int(c.model_params_counts * m_factor)
         steps_needed = math.ceil(tokens_required_for_model_size / c.total_batch_size)
-        tokens_coverage = c.max_steps * c.max_batch_size * c.max_seq_len * c.ddp_world_size * c.grad_accum_steps
+        tokens_per_step = c.max_batch_size * c.max_seq_len * c.ddp_world_size * c.grad_accum_steps
+        tokens_coverage = c.max_steps * tokens_per_step
+        dataset_fraction = tokens_coverage / c.total_tokens
+
         print(f'model parameter count: {c.model_params_counts:,}')
         print(f'number of tokens in the dataset: {c.total_tokens:,}')
         print(f'full dataset steps: {c.complete_max_steps}')
         print(f'heuristic token target [model parameter count * {m_factor}]: {tokens_required_for_model_size:,}')
         print(f'dataset covers heuristic? {"YES" if c.total_tokens >= tokens_required_for_model_size else "NO"}')
         print(f'number of steps needed for target: {steps_needed}')
-        print(f'configured "max steps" corresponds to {round((c.max_steps / c.complete_max_steps) * 100,2)}% of total tokens (~{tokens_coverage:,})')
+        print(f'tokens per step: {tokens_per_step:,}')
+        print(f'tokens processed in this run: {tokens_coverage:,}')
+        print(f'fraction of dataset processed: {dataset_fraction*100:.2f}%')
         print(f'configured "max steps" covers heuristic? {"YES" if c.max_steps >= steps_needed else "NO"}')
 
     if c.is_dpo_training:
