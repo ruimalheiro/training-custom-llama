@@ -424,13 +424,14 @@ class Transformer(nn.Module):
 
         hidden_state = self.tok_embeddings(input_ids)
 
-        if self.rope_freqs.device != hidden_state.device or (not self.is_rope_cis and self.rope_freqs.dtype != hidden_state.dtype):
-            self.rope_freqs = self.rope_freqs.to(
-                dtype=hidden_state.dtype if not self.is_rope_cis else self.rope_freqs.dtype,
+        rope_freqs = self.rope_freqs
+        if rope_freqs.device != hidden_state.device or (not self.is_rope_cis and rope_freqs.dtype != hidden_state.dtype):
+            rope_freqs = rope_freqs.to(
+                dtype=hidden_state.dtype if not self.is_rope_cis else rope_freqs.dtype,
                 device=hidden_state.device
             )
 
-        rope_freqs = self.rope_freqs[start_position : start_position + sequence_length]
+        rope_freqs = rope_freqs[start_position : start_position + sequence_length]
 
         mask = None
         if attention_mask is not None:
