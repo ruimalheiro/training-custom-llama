@@ -18,7 +18,13 @@ from lr_schedulers import cosine_scheduler
 def print_dict(config):
     print(json.dumps(config, indent=4))
 
-def manage_checkpoints(directory, current_step, max_files):
+def log(content, pbar=None):
+    if pbar is not None:
+        pbar.write(content)
+    else:
+        print(content)
+
+def manage_checkpoints(directory, current_step, max_files, pbar=None):
     # List all checkpoint files
     checkpoints = [os.path.join(directory, file) for file in os.listdir(directory) if file.startswith('model_')]
     # Extract steps from filenames and pair them
@@ -35,7 +41,7 @@ def manage_checkpoints(directory, current_step, max_files):
         for step, file in steps_files:
             if step < cutoff_step:
                 os.remove(file)
-                print(f'Deleted old checkpoint: {file}')
+                log(f'Deleted old checkpoint: {file}', pbar)
 
 def state_to_cpu(obj):
     # helper to move items from the state to cpu to avoid using more vram
@@ -60,7 +66,8 @@ def save_checkpoint(
     extra_metadata,
     max_number_checkpoints,
     is_master_process,
-    use_fsdp=False
+    use_fsdp=False,
+    pbar=None
 ):
     if use_fsdp and dist.is_initialized():
         # ensures we materialize both model / optimizer fully before we attempt to save
@@ -91,9 +98,9 @@ def save_checkpoint(
         }
 
         torch.save(checkpoint, checkpoint_path)
-        print(f'Saved checkpoint: {checkpoint_path}')
+        log(f'Saved checkpoint: {checkpoint_path}', pbar)
 
-        manage_checkpoints(checkpoint_dir, current_step=step, max_files=max_number_checkpoints)
+        manage_checkpoints(checkpoint_dir, current_step=step, max_files=max_number_checkpoints, pbar=pbar)
 
 def load_checkpoint(
     checkpoint_dir,

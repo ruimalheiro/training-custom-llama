@@ -728,7 +728,8 @@ with torch_profiler_context as prof:
                         extra_checkpoint_metadata,
                         max_number_checkpoints,
                         is_master_process,
-                        use_fsdp
+                        use_fsdp,
+                        pbar
                     )
             else:
                 if step > early_stopping_patience_skip_steps:
