@@ -641,6 +641,12 @@ class Transformer(nn.Module):
 
         return out_tokens
 
+    def log(self, content, pbar=None):
+        if pbar is not None:
+            pbar.write(content)
+        else:
+            print(content)
+
     def test_dialogue_custom(
         self,
         texts,
@@ -654,7 +660,8 @@ class Transformer(nn.Module):
         device='cpu',
         is_instruct=False,
         return_result=False,
-        skip_encoding=False
+        skip_encoding=False,
+        pbar=None
     ):
         if not isinstance(texts, list):
             texts = [texts]
@@ -687,20 +694,20 @@ class Transformer(nn.Module):
         outputs = []
 
         if return_result is False:
-            print('-------------------------------------------')
+            self.log('-------------------------------------------', pbar)
 
         for text, result in zip(texts, results):
             prompt_and_result = text + result
             if is_instruct:
                 prompt_and_result = text + ' ' + result
             if return_result is False:
-                print(prompt_and_result + '<|FAKE_END|>')
+                self.log(prompt_and_result + '<|FAKE_END|>', pbar)
             if full_seq:
                 outputs.append(prompt_and_result)
             else:
                 outputs.append(result)
         if return_result is False:
-            print('-------------------------------------------')
+            self.log('-------------------------------------------', pbar)
         return outputs
 
     def get_parameters_count(self):

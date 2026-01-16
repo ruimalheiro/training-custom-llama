@@ -179,10 +179,13 @@ args = parser.parse_args()
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device = init_multi_gpu(seed, device_type)
 
 # LOG HELPER
-def log(content, force=False):
+def log(content, force=False, pbar=None):
     global is_master_process
     if is_master_process or force:
-        print(content)
+        if pbar is not None:
+            pbar.write(content)
+        else:
+            print(content)
 
 #### INIT WANDB wrapper
 wandb = WandbWrapper(enabled=wandb_enabled, is_master_process=is_master_process)
@@ -215,6 +218,7 @@ loaded_model_state = None
 loaded_optimizer_state = None
 start_step = 0
 best_val_loss = float('inf')
+val_ce = float('inf')
 loaded_train_loader_state = None
 loaded_val_loader_state = None
 is_lora_checkpoint = False
@@ -273,6 +277,8 @@ if loaded_train_loader_state is not None and loaded_val_loader_state is not None
 
 #### HellaSwag data
 HELLASWAG_DATA = load_hellaswag_file(hellaswag_path, ddp, is_master_process, size=hellaswag_number_of_examples)
+
+run_hellaswag_eval = False if hellaswag_every_x_steps == -1 else True
 
 #### INIT MODEL AND TRAINING SETUP
 model_config = ModelConfig(
@@ -492,7 +498,15 @@ torch_profiler_context = (
     ) if torch_profiler_enabled else nullcontext()
 )
 with torch_profiler_context as prof:
-    for step in tqdm(range(start_step, max_steps), initial=start_step, total=max_steps, desc=tqdm_label, disable=not is_master_process):
+    pbar = tqdm(
+        range(start_step, max_steps),
+        initial=start_step,
+        total=max_steps,
+        desc=tqdm_label,
+        disable=not is_master_process,
+        dynamic_ncols=True,
+    )
+    for step in pbar:
         if abort_if_no_improve.item() == 1:
             log(f'Rank {ddp_rank} received stop signal.', True)
             break
@@ -509,7 +523,7 @@ with torch_profiler_context as prof:
 
             dpo_metrics = None
             with torch.no_grad():
-                for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process):
+                for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process, leave=False):
                     if is_dpo_training:
                         # x, y, z = prompt, chosen, rejected
                         x, y, z = val_loader.next_batch()
@@ -688,7 +702,7 @@ with torch_profiler_context as prof:
             raw_model.disable_moe_stats()
 
             if is_master_process:
-                log(f'\nvalidation loss: {val_ce:.4f}')
+                log(f'\nValidation loss: {val_ce:.4f}', pbar=pbar)
                 wandb_metrics = {'Validation Loss': val_ce}
                 if is_dpo_training:
                     log(dpo_metrics['str'])
@@ -719,24 +733,24 @@ with torch_profiler_context as prof:
             else:
                 if step > early_stopping_patience_skip_steps:
                     epochs_no_improve += 1
-                    log(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}')
+                    log(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - Attempts left: {early_stopping_patience - epochs_no_improve}', pbar=pbar)
                 else:
-                    log(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}')
+                    log(f'Validation loss did not improve. Best: {best_val_loss}, Latest: {val_ce} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - step}', pbar=pbar)
 
-                log('Skipping save checkpoint...')
+                log('Skipping save checkpoint...', pbar=pbar)
 
             if epochs_no_improve == early_stopping_patience:
-                log(f'The validation loss did not improve for: {early_stopping_patience} - Aborting training...')
+                log(f'The validation loss did not improve for: {early_stopping_patience} - Aborting training...', pbar=pbar)
                 abort_if_no_improve[0] = 1
 
             if ddp:
                 broadcast(abort_if_no_improve, src=0)
 
-        if is_pretraining and ((step > 0 and step % hellaswag_every_x_steps == 0) or last_step):
+        if is_pretraining and run_hellaswag_eval and ((step > 0 and step % hellaswag_every_x_steps == 0) or last_step):
             model.eval()
             num_correct_norm = 0
             num_total = 0
-            for example in tqdm(HELLASWAG_DATA, 'HellaSwag validation', unit=' examples', disable=not is_master_process):
+            for example in tqdm(HELLASWAG_DATA, 'HellaSwag validation', unit=' examples', disable=not is_master_process, leave=False):
                 tokens, mask, label, valid = example['tokens'], example['mask'], example['label'], example['valid']
                 tokens = tokens.to(device)
                 mask = mask.to(device)
@@ -762,7 +776,7 @@ with torch_profiler_context as prof:
             acc_norm = num_correct_norm / num_total
 
             if is_master_process:
-                log(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}')
+                log(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}', pbar=pbar)
                 wandb.log({'HellaSwag accuracy': acc_norm})
 
         if (step > 0 and step % generate_every_x_steps == 0) or last_step:
@@ -776,7 +790,8 @@ with torch_profiler_context as prof:
                     device=device,
                     is_instruct=is_instruct_training,
                     temperature=0.0,
-                    top_p=1.0
+                    top_p=1.0,
+                    pbar=pbar
                 )
 
         torch.cuda.reset_peak_memory_stats()
@@ -898,7 +913,7 @@ with torch_profiler_context as prof:
         current_reserved_mb = torch.cuda.memory_reserved(ddp_local_rank) / 1024**2
 
         if is_master_process:
-            log(f'step: {step:4d} | train loss: {train_avg_loss:.4f} | val loss: {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/sec: {int(tokens_per_sec)} | alloc/res MiB: (peak) {peak_allocated_mb:.0f} / {peak_reserved_mb:.0f} (curr) {current_allocated_mb:.0f} / {current_reserved_mb:.0f}')
+            log(f'{step:4d} | train: {train_avg_loss:.4f} | val (last/best): {val_ce:.4f} / {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/s: {int(tokens_per_sec)} | mem MiB: {current_allocated_mb:.0f} / {current_reserved_mb:.0f} (peak) {peak_allocated_mb:.0f}', pbar=pbar)
             wandb_metrics = {
                 'Train Loss': train_avg_loss,
                 'Learning rate': lr,
@@ -911,7 +926,7 @@ with torch_profiler_context as prof:
                 'Reserved MiB': current_reserved_mb
             }
             if is_dpo_training:
-                log(dpo_metrics['str'])
+                log(dpo_metrics['str'], pbar=pbar)
                 wandb_metrics.update(dpo_metrics['wandb'])
             wandb.log(wandb_metrics)
 
