@@ -1,8 +1,8 @@
-import os
 import requests
 import json
 import torch
 
+from pathlib import Path
 from tqdm import tqdm
 from config import config
 from tokenizer import init_tokenizer
@@ -10,8 +10,10 @@ from tokenizer import init_tokenizer
 
 HELLASWAG_VAL_URL = 'https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl'
 
-DATA_CACHE_DIR = os.path.join(config.hellaswag_path)
-os.makedirs(DATA_CACHE_DIR, exist_ok=True)
+CURRENT_DIR = Path(__file__).resolve().parent
+
+DATA_CACHE_DIR = CURRENT_DIR / config.hellaswag_path
+DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
@@ -60,9 +62,11 @@ def prepare_example(example):
     return tokens, mask, label
 
 #### DOWNLOAD_DATA
-TEMP_FILE_PATH = os.path.join('./cache', 'hellaswag_val.jsonl')
+TEMP_FILE_DIR = DATA_CACHE_DIR / 'temp'
+TEMP_FILE_DIR.mkdir(parents=True, exist_ok=True)
+TEMP_FILE_PATH = TEMP_FILE_DIR / 'hellaswag_val.temp'
 
-if not os.path.exists(TEMP_FILE_PATH):
+if not TEMP_FILE_PATH.exists():
     print(f'Downloading hellaswag to {TEMP_FILE_PATH}...')
 
     response = requests.get(HELLASWAG_VAL_URL, stream=True)
@@ -81,9 +85,9 @@ else:
     print(f'temp file already exists: {TEMP_FILE_PATH}...')
 
 #### PREPARATION
-DATA_FILENAME = os.path.join(DATA_CACHE_DIR, f'hellaswag_val.jsonl')
+DATA_FILENAME = DATA_CACHE_DIR / 'hellaswag_val.jsonl'
 
-if not os.path.exists(DATA_FILENAME):
+if not DATA_FILENAME.exists():
     with open(TEMP_FILE_PATH, 'r') as file:
         lines = file.readlines()
     with open(DATA_FILENAME, 'w', encoding='utf-8') as file:
