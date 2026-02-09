@@ -4,7 +4,7 @@ from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
 from enum import Enum
 from typing import Tuple, Annotated
-from torch.distributed.fsdp import MixedPrecision
+from torch.distributed.fsdp import MixedPrecisionPolicy
 
 
 class DeviceType(str, Enum):
@@ -19,11 +19,6 @@ class TrainingPrecision(str, Enum):
     BF16 = 'bf16'
     FP16 = 'fp16'
     FP32 = 'fp32'
-
-class FSDPShardingStrategy(str, Enum):
-    DDP = 'ddp'
-    ZERO_2 = 'zero2'
-    ZERO_3 = 'zero3'
 
 class TrainConfig(BaseSettings):
     # third party envs
@@ -117,7 +112,6 @@ class TrainConfig(BaseSettings):
     lora_target_modules: list[str] = Field(alias='LORA_TARGET_MODULES')
     use_torch_compile: bool = Field(default=False, alias='USE_TORCH_COMPILE') # Will add more options later.
     use_fsdp: bool = Field(default=False, alias='USE_FSDP')
-    fsdp_sharding_strategy: FSDPShardingStrategy = Field(default=FSDPShardingStrategy.ZERO_3, alias='FSDP_SHARDING_STRATEGY')
 
     # validation
     validate_every_x_steps: int = Field(alias='VALIDATE_EVERY_X_STEPS')
@@ -162,7 +156,7 @@ class TrainConfig(BaseSettings):
     scaler: torch.amp.GradScaler | None = Field(default=None, repr=False)
     model_dtype: torch.dtype | None = Field(default=None, repr=False)
     autocast_dtype: torch.dtype | None = Field(default=None, repr=False)
-    fsdp_mp: MixedPrecision | None = Field(default=None, repr=False)
+    fsdp_mp: MixedPrecisionPolicy | None = Field(default=None, repr=False)
 
     def model_post_init(self, __context: any) -> None:
         self.is_pretraining = self.training_stage == TrainingStage.PRETRAIN
@@ -186,20 +180,18 @@ class TrainConfig(BaseSettings):
             self.scaler = None
             self.model_dtype = torch.float32
             self.autocast_dtype = torch.bfloat16
-            self.fsdp_mp = MixedPrecision(
-                param_dtype=torch.float32,
-                reduce_dtype=torch.bfloat16,
-                buffer_dtype=torch.bfloat16
+            self.fsdp_mp = MixedPrecisionPolicy(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.float32
             ) if self.use_fsdp else None
         elif self.training_precision == TrainingPrecision.FP16:
             self.use_autocast = True
             self.scaler = torch.amp.GradScaler(self.device_type) # need gradscaler when fp16
             self.model_dtype = torch.float32
             self.autocast_dtype = torch.float16
-            self.fsdp_mp = MixedPrecision(
-                param_dtype=torch.float32,
-                reduce_dtype=torch.float16,
-                buffer_dtype=torch.float16
+            self.fsdp_mp = MixedPrecisionPolicy(
+                param_dtype=torch.float16,
+                reduce_dtype=torch.float32
             ) if self.use_fsdp else None
         elif self.training_precision == TrainingPrecision.FP32:
             self.use_autocast = False

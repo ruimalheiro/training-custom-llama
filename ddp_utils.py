@@ -4,11 +4,7 @@ import torch
 from functools import partial
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    ShardingStrategy
-)
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from torch.distributed.fsdp import fully_shard
 from model import TransformerBlock
 
 
@@ -25,7 +21,7 @@ def init_multi_gpu(seed, device_type):
         ddp_world_size = int(os.environ['WORLD_SIZE'])
 
         torch.cuda.set_device(ddp_local_rank)
-        init_process_group(backend='nccl')
+        init_process_group(backend='nccl', device_id=torch.device(f'cuda:{ddp_local_rank}'))
 
         device = f'cuda:{ddp_local_rank}'
         is_master_process = ddp_rank == 0
@@ -69,33 +65,17 @@ def prepare_model_for_ddp(model, ddp_local_rank):
             static_graph=True,
             find_unused_parameters=False
         )
-    raw_model = model.module if ddp else model
-    return model, raw_model
+    return model
 
-def prepare_model_for_fsdp(model, ddp_local_rank, fsdp_precision, sharding='zero3'):
-    if sharding == 'zero3':
-        strategy = ShardingStrategy.FULL_SHARD
-    elif sharding == 'zero2':
-        strategy = ShardingStrategy.SHARD_GRAD_OP
-    else:
-        strategy = ShardingStrategy.NO_SHARD
-
-    auto_wrap_policy = partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls={TransformerBlock}
-    )
-
-    raw_model = model
-
+def prepare_model_for_fsdp(model, ddp_local_rank, fsdp_precision):
     ddp = int(os.environ.get('RANK', -1)) != -1
     if ddp:
-        model = FSDP(
-            model,
-            auto_wrap_policy=auto_wrap_policy,
-            sharding_strategy=strategy,
-            mixed_precision=fsdp_precision,
-            device_id=torch.device(f'cuda:{ddp_local_rank}'),
-            sync_module_states=True, # weights broadcasting at initialization..
-            use_orig_params=True # The default (false) would flatten the params and breaks our adam configuration as we sepparate decay vs non decay params.
-        )
-    return model, raw_model
+        for block in model.layers:
+            fully_shard(block, reshard_after_forward=True, mp_policy=fsdp_precision)
+        fully_shard(model, reshard_after_forward=False, mp_policy=fsdp_precision)
+    return model
+
+def get_model(model):
+    if hasattr(model, 'module'):
+        return model.module
+    return model

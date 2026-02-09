@@ -34,10 +34,6 @@ from torch.distributed import (
     broadcast,
     destroy_process_group
 )
-from torch.distributed.fsdp import (
-    MixedPrecision,
-    FullyShardedDataParallel as FSDP
-)
 from torch.profiler import (
     profile,
     ProfilerActivity,
@@ -47,7 +43,8 @@ from torch.profiler import (
 from ddp_utils import (
     init_multi_gpu,
     prepare_model_for_ddp,
-    prepare_model_for_fsdp
+    prepare_model_for_fsdp,
+    get_model
 )
 from model import (
     Transformer,
@@ -129,7 +126,6 @@ lora_dropout = config.lora_dropout
 lora_target_modules = config.lora_target_modules
 use_torch_compile = config.use_torch_compile
 use_fsdp = config.use_fsdp
-fsdp_sharding_strategy = config.fsdp_sharding_strategy
 
 # precision, autocast and scaler
 use_autocast = config.use_autocast
@@ -322,7 +318,7 @@ if checkpoint and loaded_model_state:
             device=device,
             is_master_process=is_master_process
         )
-    load_model_state(model, loaded_model_state, use_fsdp)
+    load_model_state(model, loaded_model_state)
     log('\nModel loading')
     log('----------------------------------------')
     log('Model checkpoint loaded and ready')
@@ -371,32 +367,31 @@ if use_torch_compile:
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model.compile()
 
-#### PREPARE OPTIMIZER OPTIMAL PARAM GROUPS
-optimizer_param_groups = model.build_optimizer_param_groups(weight_decay=weight_decay, is_master_process=is_master_process)
-
 #### PREPARE DDP / FSDP
 # for FSDP no need to move as that would actually cost more VRAM, instead let FSDP initialization alocate the shard to the device id (ddp_local_rank).
 if use_fsdp and dist.is_initialized():
     log('\nFSDP')
     log('----------------------------------------')
     log('Wrapping the model in preparation for FSDP')
-    model, raw_model = prepare_model_for_fsdp(model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
+    model = prepare_model_for_fsdp(model, ddp_local_rank, fsdp_mp)
     if is_dpo_training and dpo_ref_model:
-        dpo_ref_model, _ = prepare_model_for_fsdp(dpo_ref_model, ddp_local_rank, fsdp_mp, fsdp_sharding_strategy)
+        dpo_ref_model = prepare_model_for_fsdp(dpo_ref_model, ddp_local_rank, fsdp_mp)
 else:
     # move to gpu
     model.to(device=device, dtype=model_dtype)
     if is_dpo_training and dpo_ref_model:
         dpo_ref_model.to(device, dtype=model_dtype)
 
-    raw_model = model
     if dist.is_initialized():
         log('\nDDP')
         log('----------------------------------------')
         log('Wrapping the model in preparation for DDP')
-        model, raw_model = prepare_model_for_ddp(model, ddp_local_rank)
+        model = prepare_model_for_ddp(model, ddp_local_rank)
         if is_dpo_training and dpo_ref_model:
-            dpo_ref_model, _ = prepare_model_for_ddp(dpo_ref_model, ddp_local_rank)
+            dpo_ref_model = prepare_model_for_ddp(dpo_ref_model, ddp_local_rank)
+
+#### PREPARE OPTIMIZER OPTIMAL PARAM GROUPS
+optimizer_param_groups = get_model(model).build_optimizer_param_groups(weight_decay=weight_decay, is_master_process=is_master_process)
 
 #### INIT OPTIMIZER
 fused_available = 'fused' in inspect.signature(AdamW).parameters
@@ -411,7 +406,7 @@ optimizer = AdamW(
 )
 if loaded_optimizer_state is not None:
     assert type(loaded_optimizer_state) == dict
-    load_optimizer_state(optimizer, model if use_fsdp else raw_model, loaded_optimizer_state, use_fsdp)
+    load_optimizer_state(optimizer, model, loaded_optimizer_state)
 
     # This is to ensure the optimiser state respect the device for all params
     for group in optimizer.param_groups:
@@ -452,7 +447,7 @@ if is_master_process:
     ))
 
 if ddp:
-    dist.barrier(device_ids=[ddp_local_rank])
+    dist.barrier()
 
 log(f'\nGPU: {ddp_local_rank} is ready.', True)
 
@@ -515,8 +510,8 @@ with torch_profiler_context as prof:
 
         if (step > 0 and step % validate_every_x_steps == 0) or last_step:
             model.eval()
-            raw_model.enable_moe_stats()
-            raw_model.reset_moe_stats()
+            get_model(model).enable_moe_stats()
+            get_model(model).reset_moe_stats()
 
             val_loss_sum = torch.tensor(0.0, device=device)
             val_tok_sum = torch.tensor(0.0, device=device)
@@ -563,7 +558,7 @@ with torch_profiler_context as prof:
             moe_metrics = None
 
             if config.is_moe and config.moe_compute_stats:
-                moe_layer_stats = raw_model.get_moe_stats()
+                moe_layer_stats = get_model(model).get_moe_stats()
 
                 for layer_id, moe in moe_layer_stats:
                     if ddp:
@@ -699,7 +694,7 @@ with torch_profiler_context as prof:
 
                     })
 
-            raw_model.disable_moe_stats()
+            get_model(model).disable_moe_stats()
 
             if is_master_process:
                 log(f'\nValidation loss: {val_ce:.4f}', pbar=pbar)
@@ -718,7 +713,7 @@ with torch_profiler_context as prof:
                 if save_checkpoints is True:
                     save_checkpoint(
                         save_checkpoints_path,
-                        model if use_fsdp else raw_model,
+                        model,
                         model_config,
                         step,
                         val_ce,
@@ -728,7 +723,6 @@ with torch_profiler_context as prof:
                         extra_checkpoint_metadata,
                         max_number_checkpoints,
                         is_master_process,
-                        use_fsdp,
                         pbar
                     )
             else:
@@ -781,19 +775,16 @@ with torch_profiler_context as prof:
                 wandb.log({'HellaSwag accuracy': acc_norm})
 
         if (step > 0 and step % generate_every_x_steps == 0) or last_step:
-            model_to_test = model if use_fsdp else raw_model
-            context_manager = FSDP.summon_full_params(model_to_test, writeback=False, offload_to_cpu=False) if use_fsdp else nullcontext()
-            model_to_test.eval()
-            with context_manager:
-                model_to_test.test_dialogue_custom(
-                    test_generation_prompts,
-                    max_gen_len=max_test_gen_len,
-                    device=device,
-                    is_instruct=is_instruct_training,
-                    temperature=0.0,
-                    top_p=1.0,
-                    pbar=pbar
-                )
+            model.eval()
+            get_model(model).test_dialogue_custom(
+                test_generation_prompts,
+                max_gen_len=max_test_gen_len,
+                device=device,
+                is_instruct=is_instruct_training,
+                temperature=0.0,
+                top_p=1.0,
+                pbar=pbar
+            )
 
         torch.cuda.reset_peak_memory_stats()
 
@@ -890,7 +881,7 @@ with torch_profiler_context as prof:
 
         if scaler:
             scaler.unscale_(optimizer) # due to fp16, optimizer gradients are inflated so need to unscale before clipping.
-        norm = clip_grad_norm(model, 1.0, use_fsdp and ddp)
+        norm = clip_grad_norm(model, 1.0)
 
         lr = cosine_scheduler(step, min_lr, max_lr, warmup_steps, max_steps)
         for param_group in optimizer.param_groups:
@@ -937,5 +928,5 @@ with torch_profiler_context as prof:
 wandb.finish()
 
 if ddp:
-    dist.barrier(device_ids=[ddp_local_rank])
+    dist.barrier()
     destroy_process_group()

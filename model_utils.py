@@ -5,10 +5,12 @@ import torch.distributed as dist
 import math
 
 from collections import OrderedDict
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.tensor import DTensor
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
+    get_optimizer_state_dict,
     set_model_state_dict,
+    set_optimizer_state_dict,
     StateDictOptions
 )
 from torch.optim import AdamW
@@ -66,15 +68,15 @@ def save_checkpoint(
     extra_metadata,
     max_number_checkpoints,
     is_master_process,
-    use_fsdp=False,
     pbar=None
 ):
-    if use_fsdp and dist.is_initialized():
+    if dist.is_initialized():
         # ensures we materialize both model / optimizer fully before we attempt to save
-        options = StateDictOptions(full_state_dict=True)
+        options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+        dist.barrier()
         model_state_dict = get_model_state_dict(model, options=options)
-        optimizer_state_dict = FSDP.optim_state_dict(model, optimizer)
-        dist.barrier(device_ids=[torch.cuda.current_device()]) # we need all ranks to be sync and participate in the above
+        optimizer_state_dict = get_optimizer_state_dict(model, optimizer, options=options)
+        dist.barrier() # we need all ranks to be sync and participate in the above
     else:
         model_state_dict = model.state_dict()
         optimizer_state_dict = optimizer.state_dict()
@@ -172,28 +174,34 @@ def load_checkpoint(
     
     return model_state, optimizer_state, step, loss, train_dl_state, val_dl_state, metadata
 
-def load_model_state(model, checkpoint_state_dict, use_fsdp=False):
-    if use_fsdp and dist.is_initialized():
+def load_model_state(model, checkpoint_state_dict):
+    if dist.is_initialized():
         options = StateDictOptions(full_state_dict=True)
-        set_model_state_dict(model=model, model_state_dict=checkpoint_state_dict, options=options)
+        set_model_state_dict(
+            model=model,
+            model_state_dict=checkpoint_state_dict,
+            options=options
+        )
     else:
         model.load_state_dict(checkpoint_state_dict)
 
-def load_optimizer_state(optimizer, model, checkpoint_state_dict, use_fsdp):
-    if use_fsdp and dist.is_initialized():
-        optimizer_state_dict = FSDP.optim_state_dict_to_load(
-            optim=optimizer,
+def load_optimizer_state(optimizer, model, checkpoint_state_dict):
+    if dist.is_initialized():
+        options = StateDictOptions(full_state_dict=True)
+        set_optimizer_state_dict(
+            model=model,
+            optimizers=optimizer,
             optim_state_dict=checkpoint_state_dict,
-            model=model
+            options=options
         )
-        optimizer.load_state_dict(optimizer_state_dict)
     else:
         optimizer.load_state_dict(checkpoint_state_dict)
 
-def clip_grad_norm(model, max_norm, is_fsdp=False):
-    if is_fsdp:
-        return torch.distributed.fsdp.FullyShardedDataParallel.clip_grad_norm_(model, max_norm)
-    return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+def clip_grad_norm(model, max_norm):
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    if isinstance(norm, DTensor):
+        return norm.to_local()
+    return norm
 
 def log_workload_summary(c):
     print(f'\n{c.training_stage.upper()} configuration:')
@@ -236,8 +244,6 @@ def log_workload_summary(c):
     print(f'max steps: {c.max_steps}')
     print(f'using torch compile: {c.use_torch_compile}')
     print(f'Using FSDP: {c.use_fsdp}')
-    if c.use_fsdp:
-        print(f'FSDP sharding strategy: {c.fsdp_sharding_strategy.value}')
 
     if c.is_pretraining or c.is_instruct_training:
         # For pretraining according to the Chinchilla paper ~20.0 is reasonable. For instruct: ~0.2 to ~0.5 is reasonable
