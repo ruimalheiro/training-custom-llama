@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn.functional as F
 import json
-import torch._dynamo as dynamo
 
 from torch import nn
 from dataclasses import dataclass
@@ -126,18 +125,9 @@ class Attention(nn.Module):
 
         self.is_rope_cis = config.is_rope_cis
 
-    @dynamo.disable
-    def _proj_qkv(self, x):
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-        return xq, xk, xv
-
-    @dynamo.disable
-    def _proj_o(self, o):
-        return self.wo(o)
-
     def forward(self, x, start_pos, rope_freqs, mask=None):
         batch_size, sequence_length, _ = x.shape
-        xq, xk, xv = self._proj_qkv(x)
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
         xq = xq.view(batch_size, sequence_length, self.n_heads, self.head_dim)
         xk = xk.view(batch_size, sequence_length, self.n_kv_heads, self.head_dim)
@@ -172,7 +162,7 @@ class Attention(nn.Module):
 
         output = output.transpose(1, 2).contiguous().view(batch_size, sequence_length, -1)
 
-        return self._proj_o(output)
+        return self.wo(output)
 
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, multiple_of, ffn_dim_multiplier):
@@ -186,18 +176,10 @@ class FeedForward(nn.Module):
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
-    @dynamo.disable
-    def _proj_in(self, x):
-        return self.w1(x), self.w3(x)
-
-    @dynamo.disable
-    def _proj_out(self, x):
-        return self.w2(x)
-
     def forward(self, x):
-        a, b = self._proj_in(x)
+        a, b = self.w1(x), self.w3(x)
         c = F.silu(a) * b
-        return self._proj_out(c)
+        return self.w2(c)
 
 class MoEFeedForward(nn.Module):
     def __init__(
@@ -329,7 +311,6 @@ class RMSNorm(nn.Module):
     def _norm(self, x):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
-    @dynamo.disable
     def forward(self, x):
         return self._norm(x) * self.weight
 
