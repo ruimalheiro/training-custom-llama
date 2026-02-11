@@ -58,7 +58,7 @@ The implementation in this project is a bit different but the core ideas are the
 - `model_utils.py` Contains functionality to manage checkpoints, save and load the model. Also contains a dict print helper.
   - Torch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
   - Weights & Biases [here](https://wandb.ai/site/)
-- `model.py` Implements the custom Llama architecture. Also includes some extra functionality for text generation.
+- `model.py` Implements the custom Llama architecture.
 - `test_prompts.json` JSON with the list of input prompts to try during training. The expected properties in the JSON (as provided in the file) are "pretrain", "instruct", "dpo".
 - `tokenizer.model` Required to load the pretrained tokenizer (unless using HF checkpoint).
 - `tokenizer.py` Uses tiktoken to setup the tokenizer with some changes for encoding / decoding and the special tokens needed. If a checkpoint from HF is provided, it can load a specific tokenizer instead of using the one provided (`tokenizer.model`).
