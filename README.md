@@ -45,12 +45,14 @@ The implementation in this project is a bit different but the core ideas are the
 - `ddp_utils.py` Contains the main logic to set up the Torch DDP (Distributed Data Parallel) and FSDP2 (Fully Sharded Data Parallel).
 - `distillation_utils.py` Logic for distillation loss.
 - `dpo_utils.py` Logic for DPO loss.
+- `generate.py` Logic for sampling and text generation.
 - `hellaswag_utils.py` Contains the main logic to iterate, process and evaluate HellaSwag examples.
 - The files `load_*_dataset.py` download and prepare the datasets to be used for the respective training stage. They load the datasets via `load_dataset` from the `datasets` HF package.
   - Each load script have an associated configuration file:
     - `hf_pretrain_datasets_mix.json`
     - `hf_instruct_datasets_mix.json`
     - `hf_dpo_datasets_mix.json`
+- `logger.py` Simple reusable logger.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
 - `model_utils.py` Contains functionality to manage checkpoints, save and load the model. Also contains a dict print helper.
