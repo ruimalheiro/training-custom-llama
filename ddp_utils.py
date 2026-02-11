@@ -5,7 +5,6 @@ from functools import partial
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group
 from torch.distributed.fsdp import fully_shard
-from model import TransformerBlock
 
 
 os.environ.setdefault('TORCH_NCCL_ASYNC_ERROR_HANDLING', '1')
