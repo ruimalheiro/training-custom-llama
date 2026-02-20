@@ -10,3 +10,4 @@ torch
 tqdm
 tensorboard
 torch-tb-profiler
+pytest

@@ -1,21 +1,18 @@
 # Llama-style transformer and multi-node / multi-GPU training
 
-This is a project for educational purposes that implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training.
+This project implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training.
 
-This repo demonstrates:
-- Llama 3 like baseline architecture in pure PyTorch
+This focus mainly in:
+- Llama like baseline architecture in pure PyTorch
 - Multi-node / multi-GPU training
-- Multiple training methods (SFT, distill, DPO)
+- Multiple training methods (SFT, distill, DPO, etc.)
 
 **NOTE**: 
 - The project can be adapted for other datasets.
-- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project. The default tokenizer is the tiktoken tokenizer with a configuration similar to Llama 3's tokenizer. A Hugging Face tokenizer can also be loaded (check the env.example) which I recommend for smaller experiments, especially when the vocabulary is small.
+- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project. The default tokenizer is the tiktoken tokenizer with a configuration similar to Llama 3's tokenizer. A Hugging Face tokenizer can also be loaded (check the env.example) which I recommend for smaller experiments, especially when the vocabulary is small or only includes english.
 
 ## Model
-The model implementation is based on the Llama 3 architecture - official project from Meta can be found [here](https://github.com/meta-llama/llama3).
-
-The implementation in this project is a bit different but the core ideas are the same. To verify it is correctly implemented, you can load Meta’s released weights for compatibility testing (not included here).
-- For this test all model architecture hyperparameters need to match.
+The model implementation was originally based on the Llama 3 architecture but later diverged due to changes and experimentation. Official project from Meta can be found [here](https://github.com/meta-llama/llama3).
 
 ## Supported features in the trainer and config options
 - Multi-node / multi-GPU
@@ -37,6 +34,7 @@ The implementation in this project is a bit different but the core ideas are the
 - Mixture of Experts (MoE)
   - Uses the existing FF module for the MLPs
   - Load balancing + z-loss
+- KV-Cache (1 token decoding)
 
 ## Instructions
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
@@ -212,4 +210,10 @@ Details on the environment variables suggested in `.env.example` can be found [h
 If using tensorboard, in a different shell start:
 ```bash
 tensorboard --logdir <LOG_PATH> --bind_all
+```
+
+## Run tests
+From the root folder:
+```bash
+pytest
 ```

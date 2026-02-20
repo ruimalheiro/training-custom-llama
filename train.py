@@ -789,7 +789,8 @@ with torch_profiler_context as prof:
                 device=device,
                 is_instruct=is_instruct_training,
                 temperature=0.0,
-                top_p=1.0
+                top_p=1.0,
+                use_kv_cache=True
             ):
                 logger.info(text, pbar=pbar)
             logger.info('-----------------------------------------------', pbar=pbar)

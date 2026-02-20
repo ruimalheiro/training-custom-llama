@@ -5,6 +5,7 @@ import json
 from torch import nn
 from dataclasses import dataclass
 from types import SimpleNamespace
+from kv_cache import KVCache
 
 
 @dataclass
@@ -126,7 +127,7 @@ class Attention(nn.Module):
         self.wv = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
 
-    def forward(self, x, rope_freqs, mask=None):
+    def forward(self, x, rope_freqs, attn_mask=None, layer_id: int = None, kv_cache: KVCache = None, start_position: int = 0):
         batch_size, sequence_length, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
@@ -136,12 +137,34 @@ class Attention(nn.Module):
 
         xq, xk = apply_rope(xq, xk, freqs=rope_freqs)
 
+        # KV cache
+        if kv_cache is not None:
+            assert layer_id is not None, '"layer_id" needs to be set when using kv cache.'
+
+            layer_k = kv_cache.keys[layer_id]
+            layer_v = kv_cache.values[layer_id]
+            end_position = start_position + sequence_length
+            layer_k[:, start_position : end_position].copy_(xk)
+            layer_v[:, start_position : end_position].copy_(xv)
+
+            xk = layer_k[:, :end_position]
+            xv = layer_v[:, :end_position]
+
         keys = repeat_kv(xk, self.n_heads // self.n_kv_heads)
         values = repeat_kv(xv, self.n_heads // self.n_kv_heads)
 
         xq = xq.transpose(1, 2)
         keys = keys.transpose(1, 2)
         values = values.transpose(1, 2)
+
+        # triangular mask toggle for torch SDPA
+        if attn_mask is not None:
+            is_causal = False
+        else:
+            if kv_cache is None:
+                is_causal = True
+            else:
+                is_causal = (start_position == 0) # 0 means prefill in this scenario
 
         # scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
         # if mask is not None:
@@ -154,8 +177,8 @@ class Attention(nn.Module):
             xq,
             keys,
             values,
-            attn_mask=mask,
-            is_causal=True
+            attn_mask=attn_mask,
+            is_causal=is_causal
         )
 
         output = output.transpose(1, 2).contiguous().view(batch_size, sequence_length, -1)
@@ -345,8 +368,8 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.ffn_norm = RMSNorm(config.dim, eps=config.norm_eps)
 
-    def forward(self, x, rope_freqs, mask=None):
-        hidden_state = x + self.attention(self.attention_norm(x), rope_freqs, mask)
+    def forward(self, x, rope_freqs, mask=None, kv_cache: KVCache = None, start_position: int = 0):
+        hidden_state = x + self.attention(self.attention_norm(x), rope_freqs, mask, layer_id=self.layer_id, kv_cache=kv_cache, start_position=start_position)
         if self.is_moe:
             ff, aux = self.feed_forward(self.ffn_norm(hidden_state))
             output = hidden_state + ff
@@ -460,9 +483,10 @@ class Transformer(nn.Module):
         input_ids,
         attention_mask=None,
         start_position=0,
-        labels=None
+        labels=None,
+        kv_cache: KVCache = None
     ):
-        batch_size, sequence_length = input_ids.shape
+        sequence_length = input_ids.shape[1]
 
         hidden_state = self.tok_embeddings(input_ids)
 
@@ -475,18 +499,33 @@ class Transformer(nn.Module):
 
         rope_freqs = rope_freqs[start_position : start_position + sequence_length]
 
-        mask = None
+        if kv_cache is not None and start_position > 0:
+            assert sequence_length == 1, 'current kv cache only supports 1 token decoding'
+
+        attn_mask = None
         if attention_mask is not None:
             attention_mask = attention_mask.to(hidden_state.device)
+
+            # adjust K length for the mask when using kv_cache
+            k_length = start_position + sequence_length if kv_cache is not None else sequence_length
+            attention_mask = attention_mask[:, :k_length]
+
             if (attention_mask != 1).any():
                 # only create mask if attention_mask is passed
                 # if following HF convention, mask is expected to have 1s in the valid tokens and 0s in the masked positions.
-                masked_positions = ~attention_mask.bool() # because torch flash attention expects true for masked.
-                mask = masked_positions[:, None, None, :] # torch flash attention expects dims [B, H, Q, K]
+                keep_positions = attention_mask.bool() # SDPA bool attn_mask semantics: True = keep, False = mask
+                attn_mask = keep_positions[:, None, None, :] # torch flash attention expects dims [B, H, Q, K]
+
+                need_causal = (kv_cache is None) or (start_position == 0 and sequence_length > 1)
+                if need_causal:
+                    q_pos = torch.arange(0, sequence_length, device=hidden_state.device)
+                    k_pos = torch.arange(0, k_length, device=hidden_state.device)
+                    causal_keep = (k_pos[None, :] <= q_pos[:, None])[None, None, :, :]  # (1,1,Q,K)
+                    attn_mask = attn_mask.expand(attn_mask.size(0), 1, sequence_length, k_length) & causal_keep
 
         aux_loss_total = hidden_state.new_zeros(())
         for layer in self.layers:
-            hidden_state, aux = layer(hidden_state, rope_freqs, mask)
+            hidden_state, aux = layer(hidden_state, rope_freqs, attn_mask, kv_cache=kv_cache, start_position=start_position)
             if aux is not None:
                 aux_loss_total = aux_loss_total + aux
 
@@ -503,4 +542,4 @@ class Transformer(nn.Module):
             ce = nn.CrossEntropyLoss(ignore_index=self.ignore_index)(flat_logits, flat_labels)
             loss = ce + (aux_loss_total / self.n_layers)
 
-        return SimpleNamespace(logits=logits, loss=loss)
+        return SimpleNamespace(logits=logits, loss=loss, kv_cache=kv_cache)

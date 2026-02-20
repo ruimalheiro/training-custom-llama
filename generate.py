@@ -1,6 +1,7 @@
 import torch
 
 from collections import defaultdict
+from kv_cache import KVCache
 
 
 def sample_top_p(probs, p):
@@ -23,10 +24,10 @@ def temperature_and_top_p_sampling(logits, temperature, top_p):
         Penalty should be ~[1.05, 1.2]
     '''
     if temperature > 0:
-        probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+        probs = torch.softmax(logits / temperature, dim=-1)
         next_token = sample_top_p(probs, top_p)
     else:
-        next_token = torch.argmax(logits[:, -1], dim=-1)
+        next_token = torch.argmax(logits, dim=-1)
     return next_token
 
 def apply_repetition_penalty(current_tokens, logits, penalty):
@@ -72,75 +73,102 @@ def apply_no_repeat_ngram(current_tokens, logits, ngram_size):
         for banned_token in banned.get(prefix, ()):
             logits[batch_index, banned_token] = float('-inf')
 
-def generate(model, prompt_tokens, max_gen_len, temperature, top_p, repetition_penalty, no_repeat_ngram_size, device):
-        batch_size = len(prompt_tokens)
+def build_tokens(tokens, prompt_tokens, stop_tokens, max_gen_len):
+    out_tokens = []
+    for i, toks in enumerate(tokens.tolist()):
+        start = len(prompt_tokens[i])
+        toks = toks[start : len(prompt_tokens[i]) + max_gen_len]
 
-        # Finding the boundaries / limits.
-        min_prompt_len = min(len(t) for t in prompt_tokens)
-        max_prompt_len = max(len(t) for t in prompt_tokens)
-        total_len = min(model.config.max_seq_len, max_gen_len + max_prompt_len)
+        for stop_token in stop_tokens:
+            try:
+                eos_idx = toks.index(stop_token)
+                toks = toks[:eos_idx]
+            except ValueError:
+                pass
+        out_tokens.append(toks)
+    return out_tokens
 
-        # Here we assume we receive a batch of multiple tokenized sequences.
-        pad_id = model.config.pad_token_id
-        tokens = torch.full((batch_size, total_len), pad_id, dtype=torch.long, device=device)
-        
-        for batch, tokens_list in enumerate(prompt_tokens):
-            tokens[batch, : len(tokens_list)] = torch.tensor(tokens_list, dtype=torch.long, device=device)
+@torch.no_grad()
+def generate(model, prompt_tokens, max_gen_len, temperature, top_p, repetition_penalty, no_repeat_ngram_size, device, use_kv_cache=False):
+    batch_size = len(prompt_tokens)
 
-        # Define stop conditions, input mask and the stop tokens (extracted from the tokenizer)
-        eos_reached = torch.tensor([False] * batch_size, device=device)
-        input_text_mask = tokens != pad_id
-        stop_tokens = torch.tensor(list(model.config.stop_tokens), device=device)
+    # Finding the boundaries / limits.
+    min_prompt_len = min(len(t) for t in prompt_tokens)
+    if min_prompt_len == 0:
+        raise ValueError('Prompt cannot be of length 0')
 
-        with torch.no_grad():
-            for current_position in range(min_prompt_len, total_len):
-                logits = model.forward(tokens[:, :current_position], start_position=0).logits
+    max_prompt_len = max(len(t) for t in prompt_tokens)
+    total_len = min(model.config.max_seq_len, max_gen_len + max_prompt_len)
 
-                # Apply repetition penalty
-                apply_repetition_penalty(
-                    tokens[:, :current_position],
-                    logits[:, -1],
-                    penalty=repetition_penalty
-                )
+    # Here we assume we receive a batch of multiple tokenized sequences.
+    pad_id = model.config.pad_token_id
+    tokens = torch.full((batch_size, total_len), pad_id, dtype=torch.long, device=device)
 
-                # Apply no repeat ngram
-                apply_no_repeat_ngram(
-                    tokens[:, :current_position],
-                    logits[:, -1],
-                    ngram_size=no_repeat_ngram_size
-                )
-                    
-                # Temperature and sampling.
-                next_token = temperature_and_top_p_sampling(logits, temperature, top_p)
-                next_token = next_token.reshape(-1)
+    for batch, tokens_list in enumerate(prompt_tokens):
+        tokens[batch, : len(tokens_list)] = torch.tensor(tokens_list, dtype=torch.long, device=device)
 
-                # Gets the next token depending on the condition (mask) and appends to tokens.
-                next_token = torch.where(
-                    input_text_mask[:, current_position], tokens[:, current_position], next_token
-                )
-                tokens[:, current_position] = next_token
+    # Define stop conditions, input mask and the stop tokens (extracted from the tokenizer)
+    eos_reached = torch.tensor([False] * batch_size, device=device)
+    input_text_mask = tokens != pad_id
+    stop_tokens = torch.tensor(list(model.config.stop_tokens), device=device)
 
-                # # Checks if we reached the eos on all sequences in the batch and updates the current position.
-                eos_reached |= (~input_text_mask[:, current_position]) & (torch.isin(next_token, stop_tokens))
-                
-                if all(eos_reached):
-                    break
+    current_position = min_prompt_len
 
-            # For all the sequences, we extract all tokens up to a stop_token if it exists.
-            out_tokens = []
-            for i, toks in enumerate(tokens.tolist()):
-                start = len(prompt_tokens[i])
-                toks = toks[start : len(prompt_tokens[i]) + max_gen_len]
+    # KVCache init
+    kv_cache = None
+    if use_kv_cache:
+        kv_cache = KVCache(
+            num_layers=model.config.n_layers,
+            batch_size=batch_size,
+            max_seq_len=total_len,
+            n_kv_heads=model.config.n_kv_heads or model.config.n_heads,
+            head_dim=model.config.dim // model.config.n_heads,
+            device=device,
+            dtype=model.tok_embeddings.weight.dtype
+        )
 
-                for stop_token in model.config.stop_tokens:
-                    try:
-                        eos_idx = toks.index(stop_token)
-                        toks = toks[:eos_idx]
-                    except ValueError:
-                        pass
-                out_tokens.append(toks)
+    out = model.forward(tokens[:, :current_position], start_position=0, kv_cache=kv_cache)
 
-        return out_tokens
+    while current_position < total_len:
+        logits = out.logits[:, -1]
+
+        # Apply repetition penalty
+        apply_repetition_penalty(
+            tokens[:, :current_position],
+            logits,
+            penalty=repetition_penalty
+        )
+
+        # Apply no repeat ngram
+        apply_no_repeat_ngram(
+            tokens[:, :current_position],
+            logits,
+            ngram_size=no_repeat_ngram_size
+        )
+
+        # Temperature and sampling.
+        next_token = temperature_and_top_p_sampling(logits, temperature, top_p)
+        next_token = next_token.reshape(-1)
+
+        # Gets the next token depending on the condition (mask) and appends to tokens.
+        next_token = torch.where(input_text_mask[:, current_position], tokens[:, current_position], next_token)
+
+        tokens[:, current_position] = next_token
+
+        # # Checks if we reached the eos on all sequences in the batch and updates the current position.
+        eos_reached |= (~input_text_mask[:, current_position]) & (torch.isin(next_token, stop_tokens))
+        if torch.all(eos_reached):
+            break
+
+        current_position += 1
+
+        start_position = current_position - 1 if use_kv_cache else 0
+        out = model.forward(tokens[:, start_position : current_position], start_position=start_position, kv_cache=kv_cache)
+
+    # For all the sequences, we extract all tokens up to a stop_token if it exists.
+    out_tokens = build_tokens(tokens, prompt_tokens, model.config.stop_tokens, max_gen_len)
+
+    return out_tokens
 
 def generate_and_decode(
         model,
@@ -154,7 +182,8 @@ def generate_and_decode(
         full_seq=False,
         device='cpu',
         is_instruct=False,
-        skip_encoding=False
+        skip_encoding=False,
+        use_kv_cache=False
     ):
         if not isinstance(texts, list):
             texts = [texts]
@@ -177,7 +206,8 @@ def generate_and_decode(
             top_p=top_p,
             repetition_penalty=repetition_penalty,
             no_repeat_ngram_size=no_repeat_ngram_size,
-            device=device
+            device=device,
+            use_kv_cache=use_kv_cache
         )
 
         def validate_token(tokens):
