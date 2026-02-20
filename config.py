@@ -81,7 +81,7 @@ class TrainConfig(BaseSettings):
 
     # tokenizer model path
     tokenizer_checkpoint_path: str = Field(alias='TOKENIZER_CHECKPOINT_PATH')
-    huggingface_tokenizer: bool = Field(default=False, alias='HUGGINGFACE_TOKENIZER')
+    huggingface_tokenizer: bool = Field(default=True, alias='HUGGINGFACE_TOKENIZER')
 
     # value to mask the padded tokens in the loss calculation
     ignore_index: int = Field(default=-100, alias='IGNORE_INDEX')

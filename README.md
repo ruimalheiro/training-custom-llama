@@ -2,17 +2,18 @@
 
 This project implements an LLM in pure PyTorch. It also includes scripts for data preparation and multi-node / multi-GPU training.
 
-This focus mainly in:
-- Llama like baseline architecture in pure PyTorch
+This project mainly focuses on the following:
+- Llama-like baseline architecture in pure PyTorch
 - Multi-node / multi-GPU training
 - Multiple training methods (SFT, distill, DPO, etc.)
 
 **NOTE**: 
 - The project can be adapted for other datasets.
-- We use a pretrained tokenizer as training the tokenizer is not the main focus of the project. The default tokenizer is the tiktoken tokenizer with a configuration similar to Llama 3's tokenizer. A Hugging Face tokenizer can also be loaded (check the env.example) which I recommend for smaller experiments, especially when the vocabulary is small or only includes english.
+- By default, the project uses a Hugging Face tokenizer.
+- It also supports a tiktoken-based tokenizer with a configuration similar to Llama 3's tokenizer, but the local BPE/tokenizer file is **not** included in this repository and must be provided separately.
 
 ## Model
-The model implementation was originally based on the Llama 3 architecture but later diverged due to changes and experimentation. Official project from Meta can be found [here](https://github.com/meta-llama/llama3).
+The model implementation was originally based on the Llama 3 architecture but later diverged due to changes and experimentation. The official project from Meta can be found [here](https://github.com/meta-llama/llama3).
 
 ## Supported features in the trainer and config options
 - Multi-node / multi-GPU
@@ -34,7 +35,7 @@ The model implementation was originally based on the Llama 3 architecture but la
 - Mixture of Experts (MoE)
   - Uses the existing FF module for the MLPs
   - Load balancing + z-loss
-- KV-Cache (1 token decoding)
+- KV-Cache (1-token decoding)
 
 ## Instructions
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
@@ -46,7 +47,7 @@ The model implementation was originally based on the Llama 3 architecture but la
 - `generate.py` Logic for sampling and text generation.
 - `hellaswag_utils.py` Contains the main logic to iterate, process and evaluate HellaSwag examples.
 - The files `load_*_dataset.py` download and prepare the datasets to be used for the respective training stage. They load the datasets via `load_dataset` from the `datasets` HF package.
-  - Each load script have an associated configuration file:
+  - Each load script has an associated configuration file:
     - `hf_pretrain_datasets_mix.json`
     - `hf_instruct_datasets_mix.json`
     - `hf_dpo_datasets_mix.json`
@@ -58,10 +59,12 @@ The model implementation was originally based on the Llama 3 architecture but la
   - Weights & Biases [here](https://wandb.ai/site/)
 - `model.py` Implements the custom Llama architecture.
 - `test_prompts.json` JSON with the list of input prompts to try during training. The expected properties in the JSON (as provided in the file) are "pretrain", "instruct", "dpo".
-- `tokenizer.model` Required to load the pretrained tokenizer (unless using HF checkpoint).
-- `tokenizer.py` Uses tiktoken to setup the tokenizer with some changes for encoding / decoding and the special tokens needed. If a checkpoint from HF is provided, it can load a specific tokenizer instead of using the one provided (`tokenizer.model`).
+- `tokenizer.py` Provides the tokenizer abstraction used by the project and supports two backends:
+  - `TikTokenizer`: loads tiktoken BPE weights from a local file path and configures the special tokens used by the project.
+  - `HFTokenizer`: loads a tokenizer from Hugging Face via `AutoTokenizer.from_pretrained(...)` and aligns the required special tokens (`bos`, `eos`, headers, `eot`, `pad`).
+  - `init_tokenizer(...)` selects the backend based on configuration (`HUGGINGFACE_TOKENIZER`).
 - `train.py` Main file that contains the logic for the training process.
-- `wandb_utils` A wrapper for Weights & Biases.
+- `wandb_utils.py` A wrapper for Weights & Biases.
 
 ## Setup
 - Create a python environment. Example with conda: `conda create -n my_env python=3.11`;
@@ -104,7 +107,7 @@ The file `config.py` defines all the environment variables required.
   --reset-optimizer              # Ignore stored optimizer state
   --start-step <N>               # Override internal step counter
 ```
-  NOTE: The checkpoints paths need to be set in the `.env` file (check `config.py`)
+  NOTE: The checkpoint paths need to be set in the `.env` file (check `config.py`)
 
 ### Running the Training
 - To train on **Single GPU**, run:
@@ -216,4 +219,21 @@ tensorboard --logdir <LOG_PATH> --bind_all
 From the root folder:
 ```bash
 pytest
+```
+
+## Third-party assets and licenses
+Tokenizer files, model weights, and datasets obtained from third parties are **not** included in this repository unless explicitly stated, and may be subject to their own licenses and terms.
+
+## License
+This project is licensed under the Apache License 2.0. See the `LICENSE` file for details.
+
+## Citation
+Please cite this project if it was useful in your work:
+```
+@software{rui2024trainingcustomllama,
+  author = {Rui Malheiro},
+  title = {Llama-style transformer and multi-node / multi-GPU training},
+  year = {2024},
+  url = {https://github.com/ruimalheiro/training-custom-llama}
+}
 ```
