@@ -5,8 +5,11 @@ cache/
 .gradio/
 *.pth
 *.ipynb
-
 datasets/
 checkpoints*/
 dataset*/
 wandb/
+
+# optional extra ignores for local tokenizer assets
+tokenizer.model
+*.tiktoken
