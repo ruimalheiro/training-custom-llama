@@ -236,7 +236,7 @@ if checkpoint is not None:
     if best_loss < best_val_loss and not args.reset_optimizer:
         best_val_loss = best_loss
 
-    if loaded_extra_checkpoint_metadata.get('training_stage', None) != training_stage:
+    if loaded_extra_checkpoint_metadata.get('training_stage', None) != training_stage.value:
         logger.info('** WARNING: Training stage has chanded **')
         if not args.start_step:
             logger.info('ignoring stored start step...')
