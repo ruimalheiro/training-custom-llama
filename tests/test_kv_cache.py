@@ -42,11 +42,11 @@ def test_kv_cache_matches_no_cache(model, device, dummy_prompt_tokens, steps=8):
     outA = model.forward(tokensA[:, :current_position], kv_cache=None, start_position=0)
     outB = model.forward(tokensB[:, :current_position], kv_cache=kv_cache, start_position=0)
 
-    torch.testing.assert_close(outA.logits, outB.logits, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(outA['logits'], outB['logits'], rtol=1e-4, atol=1e-4)
 
     for step in range(steps):
-        logitsA = outA.logits[:, -1]
-        logitsB = outB.logits[:, -1]
+        logitsA = outA['logits'][:, -1]
+        logitsB = outB['logits'][:, -1]
 
         # compare logits before sampling
         try:

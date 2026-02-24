@@ -547,7 +547,7 @@ with torch_profiler_context as prof:
                         x, y = val_loader.next_batch()
                         x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
                         with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
-                            loss = model(x, labels=y).loss
+                            loss = model(x, labels=y)['loss']
 
                         n_valid = (y != ignore_index).sum().float()
                     val_loss_sum += loss * n_valid
@@ -758,7 +758,7 @@ with torch_profiler_context as prof:
                 # get the logits
                 with torch.no_grad():
                     with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
-                        logits = model(tokens).logits
+                        logits = model(tokens)['logits']
 
                 if valid: # Some examples might be dummy in FSDP
                     predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
@@ -844,7 +844,7 @@ with torch_profiler_context as prof:
 
                 with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                     result = model(x, labels=y)
-                    loss = result.loss
+                    loss = result['loss']
 
                 loss_scaled = loss / grad_accum_steps
                 if is_model_distillation and teacher_model:
@@ -852,9 +852,9 @@ with torch_profiler_context as prof:
 
                     with torch.no_grad():
                         # NOTE: The vocabularies must match otherwise there will be an error.
-                        teacher_logits = teacher_model(input_ids=x).logits
+                        teacher_logits = teacher_model(input_ids=x)['logits']
 
-                    loss_distil = distillation_loss(teacher_logits, result.logits, temperature=distillation_temperature)
+                    loss_distil = distillation_loss(teacher_logits, result['logits'], temperature=distillation_temperature)
                     loss_scaled += loss_distil / grad_accum_steps
 
                 n_valid = (y != ignore_index).sum()

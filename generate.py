@@ -130,7 +130,7 @@ def generate(model, prompt_tokens, max_gen_len, temperature, top_p, repetition_p
     out = model.forward(tokens[:, :current_position], start_position=0, kv_cache=kv_cache)
 
     while current_position < total_len:
-        logits = out.logits[:, -1]
+        logits = out['logits'][:, -1]
 
         # Apply repetition penalty
         apply_repetition_penalty(

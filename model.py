@@ -542,4 +542,4 @@ class Transformer(nn.Module):
             ce = nn.CrossEntropyLoss(ignore_index=self.ignore_index)(flat_logits, flat_labels)
             loss = ce + (aux_loss_total / self.n_layers)
 
-        return SimpleNamespace(logits=logits, loss=loss, kv_cache=kv_cache)
+        return {'logits': logits, 'loss': loss, 'kv_cache': kv_cache}

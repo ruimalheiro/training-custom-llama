@@ -24,20 +24,20 @@ def test_padded_batch_matches_individual(model, device):
     attention_mask[1, :len(seq2)] = 1
 
     # batched forward (with padding)
-    out_batched = model.forward(input_ids, attention_mask=attention_mask, kv_cache=None).logits
+    out_batched = model.forward(input_ids, attention_mask=attention_mask, kv_cache=None)['logits']
 
     # individual forwards (no padding)
     out_seq1 = model.forward(
         torch.tensor([seq1], dtype=torch.long, device=device),
         attention_mask=None,
         kv_cache=None
-    ).logits
+    )['logits']
 
     out_seq2 = model.forward(
         torch.tensor([seq2], dtype=torch.long, device=device),
         attention_mask=None,
         kv_cache=None
-    ).logits
+    )['logits']
 
     # compare only valid positions
     torch.testing.assert_close(out_batched[0, :len(seq1)], out_seq1[0], rtol=1e-4, atol=1e-4)
