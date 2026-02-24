@@ -51,13 +51,14 @@ from model import (
     ModelConfig
 )
 from generate import generate_and_decode
-from model_utils import (
-    print_dict,
-    get_parameters_count,
+from checkpoints import (
     save_checkpoint,
     load_checkpoint,
     load_model_state,
-    load_optimizer_state,
+    load_optimizer_state
+)
+from model_utils import (
+    get_parameters_count,
     clip_grad_norm,
     log_workload_summary
 )

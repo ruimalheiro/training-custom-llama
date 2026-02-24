@@ -38,6 +38,7 @@ The model implementation was originally based on the Llama 3 architecture but la
 - KV-Cache (1-token decoding)
 
 ## Instructions
+- `checkpoints.py` Logic to handle checkpointing.
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
 - `data_preparation_utils.py` Contains logic to process a dataset into multiple shards.
 - `dataloaders.py` Dataloaders logic to sample and distribute the data.
@@ -54,7 +55,7 @@ The model implementation was originally based on the Llama 3 architecture but la
 - `logger.py` Simple reusable logger.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
-- `model_utils.py` Contains functionality to manage checkpoints, save and load the model. Also contains a dict print helper.
+- `model_utils.py` Contains utils like model parameter count, clip grad and logging the task summary.
   - Torch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
   - Weights & Biases [here](https://wandb.ai/site/)
 - `model.py` Implements the custom Llama architecture.
