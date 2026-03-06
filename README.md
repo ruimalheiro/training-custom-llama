@@ -38,6 +38,8 @@ The model implementation was originally based on the Llama 3 architecture but la
 - KV-Cache (1-token decoding)
 
 ## Instructions
+- `engine/` Trainer core components.
+- `tasks/` Groups the training tasks.
 - `checkpoints.py` Logic to handle checkpointing.
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
 - `data_preparation_utils.py` Contains logic to process a dataset into multiple shards.

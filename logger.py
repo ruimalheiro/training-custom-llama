@@ -17,4 +17,9 @@ class DistributedLogger:
             else:
                 print(content)
 
+    def warn(self, content, force=False, pbar=None, is_json=False):
+        yellow = '\033[93m'
+        reset = '\033[0m'
+        self.info(f'{yellow}WARNING: {content}{reset}', force=force, pbar=pbar, is_json=is_json)
+
 logger = DistributedLogger()
