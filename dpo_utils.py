@@ -19,7 +19,7 @@ def dpo_log_probs(model, prompt_ids, resp_ids):
     labels = resp_ids.reshape(-1) # [B * R]
 
     # compute logits
-    logits = model(full_input) # [B, L, V]
+    logits = model(full_input)['logits'] # [B, L, V]
 
     # Flatten B * L
     logits_flat = F.log_softmax(logits, dim=-1).view(-1, logits.size(-1)) # [B * L, V]
