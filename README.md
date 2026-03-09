@@ -39,6 +39,7 @@ The model implementation was originally based on the Llama 3 architecture but la
 
 ## Instructions
 - `engine/` Trainer core components.
+- `metrics/` Utils to handle aggregation of metrics.
 - `tasks/` Groups the training tasks.
 - `checkpoints.py` Logic to handle checkpointing.
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
