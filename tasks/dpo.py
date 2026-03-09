@@ -62,7 +62,8 @@ class DPOTask(BaseTask):
             n_valid=n_valid,
             loss=loss,
             loss_for_backward=loss_for_backward,
-            logs=dpo_metrics
+            console_logs=[dpo_metrics['str']],
+            wandb_logs=dpo_metrics['wandb']
         )
 
     @torch.no_grad()
@@ -97,5 +98,6 @@ class DPOTask(BaseTask):
         return TaskStepOutput(
             n_valid=n_valid,
             loss=loss,
-            logs=dpo_metrics
+            console_logs=[dpo_metrics['str']],
+            wandb_logs=dpo_metrics['wandb']
         )

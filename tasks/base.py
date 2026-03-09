@@ -10,7 +10,8 @@ class TaskStepOutput:
     n_valid: torch.Tensor
     tokens_processed: int = 0
     loss_for_backward: Optional[torch.Tensor] = None
-    logs: Dict[str, Any] = field(default_factory=dict)
+    console_logs: list[str] = field(default_factory=list)
+    wandb_logs: Dict[str, Any] = field(default_factory=dict)
 
 class BaseTask:
     name: str = 'base'

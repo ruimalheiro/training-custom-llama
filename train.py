@@ -283,9 +283,10 @@ if __name__ == "__main__":
         val_loader.load_state_dict(loaded_val_loader_state)
 
     #### HellaSwag data
-    HELLASWAG_DATA = load_hellaswag_file(hellaswag_path, ddp, is_master_process, size=hellaswag_number_of_examples)
-
-    run_hellaswag_eval = False if hellaswag_every_x_steps == -1 else True
+    HELLASWAG_DATA = None
+    run_hellaswag_eval = False if (not is_pretraining or hellaswag_every_x_steps == -1) else True
+    if run_hellaswag_eval:
+        HELLASWAG_DATA = load_hellaswag_file(hellaswag_path, ddp, is_master_process, size=hellaswag_number_of_examples)
 
     #### INIT MODEL AND TRAINING SETUP
     model_config = ModelConfig(
@@ -423,7 +424,7 @@ if __name__ == "__main__":
         fused=use_fused
     )
     if loaded_optimizer_state is not None:
-        assert type(loaded_optimizer_state) == dict
+        assert isinstance(loaded_optimizer_state, dict)
         load_optimizer_state(optimizer, model, loaded_optimizer_state)
 
         # This is to ensure the optimiser state respect the device for all params
@@ -441,10 +442,11 @@ if __name__ == "__main__":
     if is_model_distillation:
         assert training_stage in (TrainingStage.PRETRAIN, TrainingStage.INSTRUCT), 'Distillation only supported in PRETRAINING / INSTRUCT'
         logger.info(f'Loading teacher model on gpu: {ddp_rank}...', True)
-        teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token).to(device, dtype=model_dtype).eval()
+        teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token)
         if teacher_model.vocab_size != tokenizer.vocab_size:
             logger.warn(f'The sizes of the vocabularies for the teacher model and the tokenizer do not match: {teacher_model.vocab_size} != {tokenizer.vocab_size}\nResizing the vocab of the teacher model to match the tokenizer... NOTE: This can potentially cause issues.')
             teacher_model.resize_token_embeddings(tokenizer.vocab_size)
+        teacher_model = teacher_model.to(device, dtype=model_dtype).eval()
         logger.info(f'Finished loading teacher model on gpu: {ddp_rank}...', True)
 
     #### TRAINING LOOP
@@ -557,13 +559,15 @@ if __name__ == "__main__":
                 val_loss_sum = torch.tensor(0.0, device=device)
                 val_tok_sum = torch.tensor(0.0, device=device)
 
-                dpo_metrics = None
+                console_logs = []
+                wandb_logs = {}
                 with torch.no_grad():
                     for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process, leave=False):
                         val_output = task.validation_step(model, val_loader.next_batch())
                         loss = val_output.loss
                         n_valid = val_output.n_valid
-                        dpo_metrics = val_output.logs
+                        console_logs = val_output.console_logs
+                        wandb_logs = val_output.wandb_logs
 
                         val_loss_sum += loss * n_valid
                         val_tok_sum += n_valid
@@ -584,9 +588,11 @@ if __name__ == "__main__":
                 if is_master_process:
                     logger.info(f'\nValidation loss: {val_ce:.4f}', pbar=pbar)
                     wandb_metrics = {'Validation Loss': val_ce}
-                    if is_dpo_training:
-                        logger.info(dpo_metrics['str'])
-                        wandb_metrics.update(dpo_metrics['wandb'])
+
+                    for log in console_logs:
+                        logger.info(log, pbar=pbar)
+                    wandb_metrics.update(wandb_logs)
+
                     if moe_metrics:
                         wandb_metrics.update(moe_metrics)
                     wandb.log(wandb_metrics)
@@ -683,10 +689,10 @@ if __name__ == "__main__":
             train_loss_local_sum = torch.tensor(0.0, device=device)
             train_loss_local_token_sum = torch.tensor(0.0, device=device)
             train_local_token_sum = torch.tensor(0.0, device=device)
-            dpo_metrics = None
+            console_logs = []
+            wandb_logs = {}
             t0 = torch.cuda.Event(enable_timing=True)
             t1 = torch.cuda.Event(enable_timing=True)
-
             t0.record()
             for micro_step in range(grad_accum_steps):
                 train_output = task.train_micro_step(model, train_loader.next_batch())
@@ -694,7 +700,8 @@ if __name__ == "__main__":
                 n_valid = train_output.n_valid
                 loss = train_output.loss
                 loss_scaled = train_output.loss_for_backward
-                dpo_metrics = train_output.logs
+                console_logs = train_output.console_logs
+                wandb_logs = train_output.wandb_logs
 
                 train_loss_local_sum += loss.detach() * n_valid
                 train_loss_local_token_sum  += n_valid
@@ -761,9 +768,11 @@ if __name__ == "__main__":
                     'Alloc MiB': current_allocated_mb,
                     'Reserved MiB': current_reserved_mb
                 }
-                if is_dpo_training:
-                    logger.info(dpo_metrics['str'], pbar=pbar)
-                    wandb_metrics.update(dpo_metrics['wandb'])
+
+                for log in console_logs:
+                    logger.info(log, pbar=pbar)
+                wandb_metrics.update(wandb_logs)
+
                 wandb.log(wandb_metrics)
 
             if torch_profiler_enabled:
