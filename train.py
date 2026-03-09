@@ -85,6 +85,11 @@ def get_task(training_stage):
     else:
         raise ValueError('Unsupported training task')
 
+def should_run(step, every, last_step, run_last_step=True):
+    if every == -1:
+        return run_last_step and last_step
+    return (step > 0 and step % every == 0) or (run_last_step and last_step)
+
 if __name__ == "__main__":
     ### CONFIGURATION
 
@@ -251,12 +256,12 @@ if __name__ == "__main__":
             best_val_loss = best_loss
 
         if loaded_extra_checkpoint_metadata.get('training_stage', None) != training_stage.value:
-            logger.info('** WARNING: Training stage has chanded **')
+            logger.info('** WARNING: Training stage has changed **')
             if not args.start_step:
                 logger.info('ignoring stored start step...')
                 start_step = 0
             if loaded_train_loader_state is not None and loaded_val_loader_state is not None:
-                logger.info('ignoring stored metada for dataset...')
+                logger.info('ignoring stored metadata for dataset...')
                 loaded_train_loader_state = None
                 loaded_val_loader_state = None
             if loaded_optimizer_state is not None:
@@ -284,8 +289,7 @@ if __name__ == "__main__":
 
     #### HellaSwag data
     HELLASWAG_DATA = None
-    run_hellaswag_eval = False if (not is_pretraining or hellaswag_every_x_steps == -1) else True
-    if run_hellaswag_eval:
+    if is_pretraining:
         HELLASWAG_DATA = load_hellaswag_file(hellaswag_path, ddp, is_master_process, size=hellaswag_number_of_examples)
 
     #### INIT MODEL AND TRAINING SETUP
@@ -414,7 +418,7 @@ if __name__ == "__main__":
 
     #### INIT OPTIMIZER
     fused_available = 'fused' in inspect.signature(AdamW).parameters
-    use_fused = fused_available and 'cuda' in device
+    use_fused = fused_available and str(device).startswith('cuda')
 
     optimizer = AdamW(
         params=param_groups.optimizer_groups,
@@ -551,7 +555,7 @@ if __name__ == "__main__":
 
             last_step = (step == max_steps - 1)
 
-            if (step > 0 and step % validate_every_x_steps == 0) or last_step:
+            if should_run(step, validate_every_x_steps, last_step):
                 model.eval()
                 get_model(model).enable_moe_stats()
                 get_model(model).reset_moe_stats()
@@ -632,7 +636,7 @@ if __name__ == "__main__":
                 if ddp:
                     broadcast(abort_if_no_improve, src=0)
 
-            if is_pretraining and run_hellaswag_eval and ((step > 0 and step % hellaswag_every_x_steps == 0) or last_step):
+            if is_pretraining and should_run(step, hellaswag_every_x_steps, last_step):
                 model.eval()
                 num_correct_norm = 0
                 num_total = 0
@@ -665,7 +669,7 @@ if __name__ == "__main__":
                     logger.info(f'HellaSwag accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}', pbar=pbar)
                     wandb.log({'HellaSwag accuracy': acc_norm})
 
-            if (step > 0 and step % generate_every_x_steps == 0) or last_step:
+            if should_run(step, generate_every_x_steps, last_step):
                 model.eval()
                 logger.info('-----------------------------------------------', pbar=pbar)
                 for text in generate_and_decode(
