@@ -66,7 +66,9 @@ from hellaswag_utils import (
 from logger import logger
 from engine.state import TrainerContext
 from metrics import (
-    collect_moe_metrics
+    collect_moe_metrics,
+    accumulate_weighted_metrics,
+    combine_weighted_metrics
 )
 from tasks import (
     PretrainingTask,
@@ -562,16 +564,23 @@ if __name__ == "__main__":
 
                 val_loss_sum = torch.tensor(0.0, device=device)
                 val_tok_sum = torch.tensor(0.0, device=device)
-
                 console_logs = []
-                wandb_logs = {}
+                val_metric_sums = {}
+                val_metric_weights = {}
                 with torch.no_grad():
                     for _ in tqdm(range(val_steps), 'Validating', disable=not is_master_process, leave=False):
                         val_output = task.validation_step(model, val_loader.next_batch())
                         loss = val_output.loss
                         n_valid = val_output.n_valid
-                        console_logs = val_output.console_logs
-                        wandb_logs = val_output.wandb_logs
+
+                        console_logs.extend(val_output.console_logs)
+                        accumulate_weighted_metrics(
+                            weight=n_valid,
+                            metrics=val_output.metrics,
+                            metrics_sum_acc=val_metric_sums,
+                            metrics_weights_acc=val_metric_weights,
+                            device=device
+                        )
 
                         val_loss_sum += loss * n_valid
                         val_tok_sum += n_valid
@@ -581,6 +590,12 @@ if __name__ == "__main__":
                     dist.all_reduce(val_tok_sum, op=dist.ReduceOp.SUM)
 
                 val_ce = (val_loss_sum / val_tok_sum).item()
+
+                aggregated_val_metrics = combine_weighted_metrics(
+                    metrics_sum_acc=val_metric_sums,
+                    metrics_weights_acc=val_metric_weights,
+                    ddp=ddp
+                )
 
                 # MOE METRICS
                 moe_metrics = None
@@ -595,7 +610,7 @@ if __name__ == "__main__":
 
                     for log in console_logs:
                         logger.info(log, pbar=pbar)
-                    wandb_metrics.update(wandb_logs)
+                    wandb_metrics.update(aggregated_val_metrics)
 
                     if moe_metrics:
                         wandb_metrics.update(moe_metrics)
@@ -690,25 +705,26 @@ if __name__ == "__main__":
 
             model.train()
             optimizer.zero_grad(set_to_none=True)
-            train_loss_local_sum = torch.tensor(0.0, device=device)
-            train_loss_local_token_sum = torch.tensor(0.0, device=device)
             train_local_token_sum = torch.tensor(0.0, device=device)
             console_logs = []
-            wandb_logs = {}
+            train_metric_sums = {}
+            train_metric_weights = {}
             t0 = torch.cuda.Event(enable_timing=True)
             t1 = torch.cuda.Event(enable_timing=True)
             t0.record()
             for micro_step in range(grad_accum_steps):
                 train_output = task.train_micro_step(model, train_loader.next_batch())
                 train_local_token_sum += train_output.tokens_processed
-                n_valid = train_output.n_valid
-                loss = train_output.loss
                 loss_scaled = train_output.loss_for_backward
-                console_logs = train_output.console_logs
-                wandb_logs = train_output.wandb_logs
 
-                train_loss_local_sum += loss.detach() * n_valid
-                train_loss_local_token_sum  += n_valid
+                console_logs.extend(train_output.console_logs)
+                accumulate_weighted_metrics(
+                    weight=train_output.n_valid,
+                    metrics=train_output.metrics,
+                    metrics_sum_acc=train_metric_sums,
+                    metrics_weights_acc=train_metric_weights,
+                    device=device
+                )
 
                 if ddp and not use_fsdp: # require_backward_grad_sync is not used with FSDP
                     model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
@@ -718,21 +734,16 @@ if __name__ == "__main__":
                 else:
                     loss_scaled.backward()
 
-            train_loss_sum = train_loss_local_sum
-            train_loss_token_sum = train_loss_local_token_sum
             train_token_sum = train_local_token_sum
-
             if ddp:
-                reduce_vec = torch.stack([
-                    train_loss_local_sum.float(),
-                    train_loss_local_token_sum.float(),
-                    train_token_sum.float()
-                ])
-                dist.all_reduce(reduce_vec, op=dist.ReduceOp.SUM)
+                dist.all_reduce(train_token_sum, op=dist.ReduceOp.SUM)
+            train_token_sum = train_token_sum.item()
 
-                train_loss_sum, train_loss_token_sum, train_token_sum = reduce_vec.tolist()
-
-            train_avg_loss = train_loss_sum / train_loss_token_sum
+            aggregated_metrics = combine_weighted_metrics(
+                metrics_sum_acc=train_metric_sums,
+                metrics_weights_acc=train_metric_weights,
+                ddp=ddp
+            )
 
             if scaler:
                 scaler.unscale_(optimizer) # due to fp16, optimizer gradients are inflated so need to unscale before clipping.
@@ -760,9 +771,11 @@ if __name__ == "__main__":
             current_reserved_mb = torch.cuda.memory_reserved(ddp_local_rank) / 1024**2
 
             if is_master_process:
-                logger.info(f'{step:4d} | train: {train_avg_loss:.4f} | val (last/best): {val_ce:.4f} / {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/s: {int(tokens_per_sec)} | mem MiB: {current_allocated_mb:.0f} / {current_reserved_mb:.0f} (peak) {peak_allocated_mb:.0f}', pbar=pbar)
-                wandb_metrics = {
-                    'Train Loss': train_avg_loss,
+                train_loss = aggregated_metrics['Train Loss']
+                logger.info(f'{step:4d} | train: {train_loss:.4f} | val (last/best): {val_ce:.4f} / {best_val_loss:.4f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}s | tok/s: {int(tokens_per_sec)} | mem MiB: {current_allocated_mb:.0f} / {current_reserved_mb:.0f} (peak) {peak_allocated_mb:.0f}', pbar=pbar)
+
+                wandb_metrics = dict(aggregated_metrics)
+                wandb_metrics.update({
                     'Learning rate': lr,
                     'Norm': norm,
                     'Step time (seconds)': dt,
@@ -771,11 +784,10 @@ if __name__ == "__main__":
                     'Peak Reserved MiB': peak_reserved_mb,
                     'Alloc MiB': current_allocated_mb,
                     'Reserved MiB': current_reserved_mb
-                }
+                })
 
                 for log in console_logs:
                     logger.info(log, pbar=pbar)
-                wandb_metrics.update(wandb_logs)
 
                 wandb.log(wandb_metrics)
 

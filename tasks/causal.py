@@ -7,7 +7,7 @@ from distillation_utils import distillation_loss
 class CausalTask(BaseTask):
     name: str = 'causal'
 
-    def setup(self, config, ctx, *, teacher_model, **kwargs):
+    def setup(self, config, ctx, *, teacher_model=None, **kwargs):
         super().setup(config, ctx, **kwargs)
 
         self.teacher_model = teacher_model
@@ -34,7 +34,12 @@ class CausalTask(BaseTask):
         ):
             result = model(x, labels=y)
             loss = result['loss']
-            loss_for_backward = loss / grad_accum_steps
+
+        loss_for_backward = loss
+
+        metrics = {
+            'Train Loss': loss.detach()
+        }
 
         if self.teacher_model is not None:
             tokens_processed += x.numel()
@@ -47,18 +52,21 @@ class CausalTask(BaseTask):
                 result['logits'],
                 temperature=self.config.distillation_temperature
             )
-            loss_for_backward += loss_distil / grad_accum_steps
+            loss_for_backward = loss_for_backward + loss_distil
+
+            metrics['Train Loss'] = loss_for_backward.detach()
+            metrics['Train Distill Loss'] = loss_distil.detach()
+
+        loss_for_backward = loss_for_backward / grad_accum_steps
 
         n_valid = (y != self.config.ignore_index).sum()
-
-        if not torch.is_tensor(n_valid):
-            n_valid = torch.tensor(n_valid, device=device, dtype=loss.dtype)
 
         return TaskStepOutput(
             tokens_processed=tokens_processed,
             n_valid=n_valid,
             loss=loss,
-            loss_for_backward=loss_for_backward
+            loss_for_backward=loss_for_backward,
+            metrics=metrics
         )
 
     @torch.no_grad()

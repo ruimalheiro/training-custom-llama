@@ -13,6 +13,8 @@ class DPOTask(BaseTask):
     def setup(self, config, ctx, *, dpo_ref_model, **kwargs):
         super().setup(config, ctx, **kwargs)
 
+        assert dpo_ref_model is not None, 'DPOTask requires a reference model'
+
         self.dpo_ref_model = dpo_ref_model
 
         return self
@@ -63,7 +65,10 @@ class DPOTask(BaseTask):
             loss=loss,
             loss_for_backward=loss_for_backward,
             console_logs=[dpo_metrics['str']],
-            wandb_logs=dpo_metrics['wandb']
+            metrics={
+                'Train Loss': loss.detach(),
+                **dpo_metrics['wandb']
+            }
         )
 
     @torch.no_grad()
@@ -93,11 +98,11 @@ class DPOTask(BaseTask):
             reference_log_probs_neg,
             dpo_beta
         )
-        n_valid = torch.tensor(x.size(0), device=device) # Assume 1 valid example as the entire triple.
+        n_valid = torch.tensor(x.size(0), device=device, dtype=loss.dtype) # Assume 1 valid example as the entire triple.
 
         return TaskStepOutput(
             n_valid=n_valid,
             loss=loss,
             console_logs=[dpo_metrics['str']],
-            wandb_logs=dpo_metrics['wandb']
+            metrics=dpo_metrics['wandb']
         )
