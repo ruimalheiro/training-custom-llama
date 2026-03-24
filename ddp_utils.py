@@ -1,7 +1,6 @@
 import os
 import torch
 
-from functools import partial
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group
 from torch.distributed.fsdp import fully_shard
