@@ -11,6 +11,8 @@ from torch.distributed.checkpoint.state_dict import (
     StateDictOptions
 )
 from logger import logger
+from dataclasses import dataclass, field
+from typing import Any
 
 
 def state_to_cpu(obj):
@@ -91,6 +93,19 @@ def save_checkpoint(
 
         manage_checkpoints(checkpoint_dir, current_step=step, max_files=max_number_checkpoints, pbar=pbar)
 
+@dataclass
+class CheckpointData:
+    path: str | None = None
+    checkpoint_name: str | None = None
+    model_state: dict[str, Any] | None = None
+    optimizer_state: dict[str, Any] | None = None
+    start_step: int = 0
+    best_val_loss: float = float('inf')
+    train_loader_state: Any = None
+    val_loader_state: Any = None
+    is_lora_checkpoint: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
 def load_checkpoint(
     checkpoint_dir,
     checkpoint,
@@ -99,7 +114,7 @@ def load_checkpoint(
     is_master_process=True
 ):
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint)
-    state = torch.load(checkpoint_path, map_location='cpu')
+    state = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
 
     step = state['step'] + 1
     loss = state['val_loss']
@@ -147,7 +162,7 @@ def load_checkpoint(
             logger.info(f'\nResuming from step: {step}')
         else:
             logger.info(f'\nStarting from step: 0')
-        logger.info(f'Last calculated loss: {loss}')
+        logger.info(f'Last calculated loss: {loss:.4f}')
 
         logger.info('\nExtra metadata stored in the checkpoint:')
         logger.info(metadata, is_json=True)
@@ -158,8 +173,19 @@ def load_checkpoint(
         if is_master_process:
             logger.info('\nClearing cuda cache...\n')
         torch.cuda.empty_cache()
-    
-    return model_state, optimizer_state, step, loss, train_dl_state, val_dl_state, metadata
+
+    return CheckpointData(
+        path=checkpoint_dir,
+        checkpoint_name=checkpoint,
+        model_state=model_state,
+        optimizer_state=optimizer_state,
+        start_step=step,
+        best_val_loss=loss,
+        train_loader_state=train_dl_state,
+        val_loader_state=val_dl_state,
+        is_lora_checkpoint=metadata.get('lora_enabled', False),
+        metadata=metadata
+    )
 
 def load_model_state(model, checkpoint_state_dict):
     if dist.is_initialized():

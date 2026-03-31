@@ -1,16 +1,12 @@
-import torch
-
 from dataclasses import dataclass
-from typing import Any
+
 
 @dataclass
-class TrainerContext:
-    device: torch.device
-    device_type: str
-    use_autocast: bool
-    autocast_dtype: torch.dtype
-    grad_accum_steps: int
-    scaler: Any
-    ddp: bool
-    use_fsdp: bool
-    is_master_process: bool
+class TrainerState:
+    global_step: int = 0
+    start_step: int = 0
+    max_steps: int = 0
+    best_val_loss: float = float('inf')
+    last_val_loss: float = float('inf')
+    num_evals_no_improve: int = 0
+    should_stop: bool = False

@@ -153,10 +153,6 @@ class TrainConfig(BaseSettings):
     save_checkpoints_path: str = Field(default='', repr=False)
 
     use_autocast: bool = Field(default=False, repr=False)
-    scaler: torch.amp.GradScaler | None = Field(default=None, repr=False)
-    model_dtype: torch.dtype | None = Field(default=None, repr=False)
-    autocast_dtype: torch.dtype | None = Field(default=None, repr=False)
-    fsdp_mp: MixedPrecisionPolicy | None = Field(default=None, repr=False)
 
     def model_post_init(self, __context: any) -> None:
         self.is_pretraining = self.training_stage == TrainingStage.PRETRAIN
@@ -175,32 +171,10 @@ class TrainConfig(BaseSettings):
         else:
             raise ValueError(f'Invalid training stage: {self.training_stage}')
 
-        if self.training_precision == TrainingPrecision.BF16:
-            self.use_autocast = True
-            self.scaler = None
-            self.model_dtype = torch.float32
-            self.autocast_dtype = torch.bfloat16
-            self.fsdp_mp = MixedPrecisionPolicy(
-                param_dtype=torch.bfloat16,
-                reduce_dtype=torch.float32
-            ) if self.use_fsdp else None
-        elif self.training_precision == TrainingPrecision.FP16:
-            self.use_autocast = True
-            self.scaler = torch.amp.GradScaler(self.device_type) # need gradscaler when fp16
-            self.model_dtype = torch.float32
-            self.autocast_dtype = torch.float16
-            self.fsdp_mp = MixedPrecisionPolicy(
-                param_dtype=torch.float16,
-                reduce_dtype=torch.float32
-            ) if self.use_fsdp else None
-        elif self.training_precision == TrainingPrecision.FP32:
-            self.use_autocast = False
-            self.scaler = None
-            self.model_dtype = torch.float32
-            self.autocast_dtype = torch.float32
-            self.fsdp_mp = None
-        else:
-            raise ValueError('Invalid training precision')
+        self.use_autocast = self.training_precision in {
+            TrainingPrecision.BF16,
+            TrainingPrecision.FP16,
+        }
 
     model_config = ConfigDict(
         env_file = '.env',
