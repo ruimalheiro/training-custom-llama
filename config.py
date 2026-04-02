@@ -98,6 +98,7 @@ class TrainConfig(BaseSettings):
     weight_decay: float = Field(alias='WEIGHT_DECAY')
     max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
     adamw_betas: Tuple[float, float] = Field(default=(0.9, 0.95), alias='ADAMW_BETAS')
+    adamw_use_fused: Annotated[bool | None, Field(alias='ADAMW_USE_FUSED')] = None
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
     dpo_beta: float = Field(default=0.1, alias='DPO_BETA')

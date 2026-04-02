@@ -159,14 +159,11 @@ if __name__ == "__main__":
     # #### INIT DATA LOADERS
     # #### HellaSwag data
     # #### INIT MODEL AND TRAINING SETUP
-        # #### BATCH SIZE ASSERTIONS
-
-    # if loaded_train_loader_state is not None and loaded_val_loader_state is not None:
-    #     train_loader.load_state_dict(loaded_train_loader_state)
-    #     val_loader.load_state_dict(loaded_val_loader_state)
-
+    # #### BATCH SIZE ASSERTIONS
     # # COUNT PARAMS
-    # model_params_counts = get_parameters_count(model)
+    # # Model distillation setup
+
+    
 
     # # DPO (Direct Preference Optimization) reference model setup
     # dpo_ref_model = None
@@ -218,9 +215,6 @@ if __name__ == "__main__":
     # logger.info(f'trainable parameters: {param_groups.total_trainable_params:,}')
 
     # #### INIT OPTIMIZER
-    # fused_available = 'fused' in inspect.signature(AdamW).parameters
-    # use_fused = fused_available and str(device).startswith('cuda')
-
     # optimizer = AdamW(
     #     params=param_groups.optimizer_groups,
     #     lr=max_lr,
@@ -242,17 +236,6 @@ if __name__ == "__main__":
 
     #     logger.info('optimizer state loaded and ready')
 
-    # # Model distillation setup
-    # teacher_model = None
-    # if is_model_distillation:
-    #     assert training_stage in (TrainingStage.PRETRAIN, TrainingStage.INSTRUCT), 'Distillation only supported in PRETRAINING / INSTRUCT'
-    #     logger.info(f'Loading teacher model on gpu: {ddp_rank}...', True)
-    #     teacher_model = AutoModelForCausalLM.from_pretrained(teacher_model_checkpoint, token=config.hf_token)
-    #     if teacher_model.vocab_size != tokenizer.vocab_size:
-    #         logger.warn(f'The sizes of the vocabularies for the teacher model and the tokenizer do not match: {teacher_model.vocab_size} != {tokenizer.vocab_size}\nResizing the vocab of the teacher model to match the tokenizer... NOTE: This can potentially cause issues.')
-    #         teacher_model.resize_token_embeddings(tokenizer.vocab_size)
-    #     teacher_model = teacher_model.to(device, dtype=model_dtype).eval()
-    #     logger.info(f'Finished loading teacher model on gpu: {ddp_rank}...', True)
 
     # #### TRAINING LOOP
     # total_tokens = train_loader.calculate_max_tokens()

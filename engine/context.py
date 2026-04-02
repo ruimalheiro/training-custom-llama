@@ -29,6 +29,7 @@ class PrecisionContext:
 
 @dataclass(frozen=True)
 class TrainerContext:
+    distributed: DistributedContext
     device: DeviceContext
     precision: PrecisionContext
     grad_accum_steps: int

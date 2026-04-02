@@ -10,7 +10,7 @@ from engine.context import (
     PrecisionContext,
     TrainerContext
 )
-from engine.state import TrainerState
+from engine.core import TrainerState
 from ddp_utils import (
     init_multi_gpu
 )
@@ -25,14 +25,16 @@ from model import (
     ModelConfig, 
     Transformer
 )
+from model_utils import (
+    get_parameters_count
+)
 from dataloaders import init_data_loaders
 from checkpoints import (
     load_checkpoint,
     load_model_state
 )
 from lora import apply_lora
-
-from wandb_utils import WandbWrapper
+from tasks import get_task
 
 
 class Trainer:
@@ -50,9 +52,12 @@ class Trainer:
         self.tokenizer = None
         self.model_config = None
         self.model = None
+        self.model_num_parameters = None
         self.train_loader = None
         self.val_loader = None
         self.checkpoint_data = None
+        self.task = None
+        self.task_assets = None
 
         self.validate_config()
 
@@ -73,28 +78,55 @@ class Trainer:
 
     def setup(self):
         self.setup_global_torch_optimizations()
-        self.build_distributed_and_device_context()
-        self.build_precision_context()
-        self.build_trainer_context()
-        self.load_test_generation_prompts()
-        self.load_hellaswag_eval_data()
-        self.build_tokenizer()
-        self.build_model()
-        self.build_data_loaders()
-        checkpoint_req = self.resolve_checkpoint_request()
-        if checkpoint_req:
-            self.load_checkpoint_data(checkpoint_req)
-            self.apply_lora_modification()
-            self.apply_model_state()
-            self.apply_data_loaders_state()
-        else:
-            self.apply_lora_modification()
+        self.build_contexts()
+        self.set_logger_master()
+        self.load_assets()
+        self.build_components()
+        self.resolve_checkpoint()
+        self.apply_lora()
+        self.compute_model_num_parameters()
+        self.build_task()
+        self.prepare_model_for_distributed_context()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
         torch.backends.cudnn.conv.fp32_precision = 'tf32'
 
-    def build_distributed_and_device_context(self):
+    def build_contexts(self):
+        device = self.build_distributed_context()
+        self.build_device_context(device)
+        self.build_precision_context()
+        self.build_trainer_context()
+
+    def load_assets(self):
+        self.load_test_generation_prompts()
+        self.load_hellaswag_eval_data()
+
+    def build_components(self):
+        self.build_tokenizer()
+        self.build_model()
+        self.build_data_loaders()
+
+    def resolve_checkpoint(self):
+        checkpoint_req = self.resolve_checkpoint_request()
+        if checkpoint_req:
+            self.load_checkpoint_data(checkpoint_req)
+            self.apply_lora_for_checkpoint()
+            self.restore_model_state()
+            self.restore_data_loaders_state()
+
+    def build_task(self):
+        self.task = get_task(self.config.training_stage)
+        self.task.setup(config=self.config, ctx=self.trainer_ctx)
+        self.task_assets = self.task.build_assets(tokenizer=self.tokenizer, model=self.model)
+
+    def prepare_model_for_distributed_context(self):
+        if self.config.use_fsdp:
+            self.wrap_model_for_fsdp()
+        else:
+            self.wrap_model_for_ddp()
+
+    def build_distributed_context(self):
         ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device = init_multi_gpu(self.config.seed, self.config.device_type.value)
         self.distributed_ctx = DistributedContext(
             ddp=ddp,
@@ -104,11 +136,16 @@ class Trainer:
             use_fsdp=self.config.use_fsdp,
             is_master_process=is_master_process
         )
+        return device
+
+    def build_device_context(self, device):
         self.device_ctx = DeviceContext(
             device_type=self.config.device_type.value,
             device=device
         )
-        logger.set_master(is_master_process)
+
+    def set_logger_master(self):
+        logger.set_master(self.distributed_ctx.is_master_process)
 
     def build_precision_context(self):
         if self.config.training_precision == TrainingPrecision.BF16:
@@ -162,6 +199,7 @@ class Trainer:
 
     def build_trainer_context(self):
         self.trainer_ctx = TrainerContext(
+            distributed=self.distributed_ctx,
             device=self.device_ctx,
             precision=self.precision_ctx,
             grad_accum_steps=self.compute_grad_accum_steps(self.distributed_ctx.ddp_world_size)
@@ -292,33 +330,58 @@ class Trainer:
 
     def apply_lora_modification(self):
         config = self.config
-        checkpoint_data = self.checkpoint_data
-        if config.lora_enabled or (checkpoint_data and checkpoint_data.is_lora_checkpoint):
-            apply_lora(
-                self.model,
-                rank=config.lora_rank,
-                alpha=config.lora_alpha,
-                dropout=config.lora_dropout,
-                target_modules=config.lora_target_modules,
-                device=self.device_ctx.device,
-                is_master_process=self.distributed_ctx.is_master_process
-            )
+        apply_lora(
+            self.model,
+            rank=config.lora_rank,
+            alpha=config.lora_alpha,
+            dropout=config.lora_dropout,
+            target_modules=config.lora_target_modules,
+            device=self.device_ctx.device,
+            is_master_process=self.distributed_ctx.is_master_process
+        )
 
-    def apply_model_state(self):
+    def apply_lora_for_checkpoint(self):
+        if self.checkpoint_data.is_lora_checkpoint:
+            if not self.config.lora_enabled:
+                raise ValueError('"lora_enabled" must be set to True when loading checkpoint that includes LoRA')
+            self.apply_lora_modification()
+
+    def apply_lora(self):
+        if (
+            self.config.lora_enabled and
+            (
+                (not self.checkpoint_data) or
+                (self.checkpoint_data and not self.checkpoint_data.is_lora_checkpoint)
+            )
+        ):
+            self.apply_lora_modification()
+
+    def restore_model_state(self):
         load_model_state(self.model, self.checkpoint_data.model_state)
         logger.info('\nModel loading')
         logger.info('----------------------------------------')
         logger.info('Model checkpoint loaded and ready')
 
-    def apply_data_loaders_state(self):
+    def restore_data_loaders_state(self):
         checkpoint_data = self.checkpoint_data
         if checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
             self.train_loader.load_state_dict(checkpoint_data.train_loader_state)
             self.val_loader.load_state_dict(checkpoint_data.val_loader_state)
 
+    def compute_model_num_parameters(self):
+        self.model_num_parameters = get_parameters_count(self.model)
+
+    def wrap_model_for_ddp(self):
+        pass
+
+    def wrap_model_for_fsdp(self):
+        pass
+
     def train(self):
         pass
 
+
+# from wandb_utils import WandbWrapper
     # def setup_wandb(self):
     #     self.wandb = WandbWrapper(
     #         enabled=self.config.wandb_enabled,
