@@ -165,33 +165,6 @@ if __name__ == "__main__":
     #     train_loader.load_state_dict(loaded_train_loader_state)
     #     val_loader.load_state_dict(loaded_val_loader_state)
 
-    # if checkpoint is not None and loaded_model_state is not None:
-    #     if is_lora_checkpoint:
-    #         apply_lora(
-    #             model,
-    #             rank=lora_rank,
-    #             alpha=lora_alpha,
-    #             dropout=lora_dropout,
-    #             target_modules=lora_target_modules,
-    #             device=device,
-    #             is_master_process=is_master_process
-    #         )
-    #     load_model_state(model, loaded_model_state)
-    #     logger.info('\nModel loading')
-    #     logger.info('----------------------------------------')
-    #     logger.info('Model checkpoint loaded and ready')
-
-    # if lora_enabled and not is_lora_checkpoint:
-    #     apply_lora(
-    #         model,
-    #         rank=lora_rank,
-    #         alpha=lora_alpha,
-    #         dropout=lora_dropout,
-    #         target_modules=lora_target_modules,
-    #         device=device,
-    #         is_master_process=is_master_process
-    #     )
-
     # # COUNT PARAMS
     # model_params_counts = get_parameters_count(model)
 

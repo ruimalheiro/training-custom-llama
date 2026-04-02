@@ -26,7 +26,11 @@ from model import (
     Transformer
 )
 from dataloaders import init_data_loaders
-from checkpoints import load_checkpoint
+from checkpoints import (
+    load_checkpoint,
+    load_model_state
+)
+from lora import apply_lora
 
 from wandb_utils import WandbWrapper
 
@@ -80,6 +84,11 @@ class Trainer:
         checkpoint_req = self.resolve_checkpoint_request()
         if checkpoint_req:
             self.load_checkpoint_data(checkpoint_req)
+            self.apply_lora_modification()
+            self.apply_model_state()
+            self.apply_data_loaders_state()
+        else:
+            self.apply_lora_modification()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -280,6 +289,32 @@ class Trainer:
             logger.info('\n')
         
         self.checkpoint_data = checkpoint_data
+
+    def apply_lora_modification(self):
+        config = self.config
+        checkpoint_data = self.checkpoint_data
+        if config.lora_enabled or (checkpoint_data and checkpoint_data.is_lora_checkpoint):
+            apply_lora(
+                self.model,
+                rank=config.lora_rank,
+                alpha=config.lora_alpha,
+                dropout=config.lora_dropout,
+                target_modules=config.lora_target_modules,
+                device=self.device_ctx.device,
+                is_master_process=self.distributed_ctx.is_master_process
+            )
+
+    def apply_model_state(self):
+        load_model_state(self.model, self.checkpoint_data.model_state)
+        logger.info('\nModel loading')
+        logger.info('----------------------------------------')
+        logger.info('Model checkpoint loaded and ready')
+
+    def apply_data_loaders_state(self):
+        checkpoint_data = self.checkpoint_data
+        if checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
+            self.train_loader.load_state_dict(checkpoint_data.train_loader_state)
+            self.val_loader.load_state_dict(checkpoint_data.val_loader_state)
 
     def train(self):
         pass
