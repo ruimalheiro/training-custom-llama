@@ -16,7 +16,8 @@ from engine.core import TrainerState
 from ddp_utils import (
     init_multi_gpu,
     prepare_model_for_ddp,
-    prepare_model_for_fsdp
+    prepare_model_for_fsdp,
+    get_model
 )
 from config import (
     DeviceType,
@@ -29,16 +30,20 @@ from model import (
     ModelConfig, 
     Transformer
 )
-from model_utils import (
-    get_parameters_count
-)
 from dataloaders import init_data_loaders
 from checkpoints import (
     load_checkpoint,
     load_model_state
 )
-from lora import apply_lora
+from lora import (
+    apply_lora,
+    freeze_non_lora_parameters
+)
 from tasks import get_task
+from engine.optim import (
+    classify_trainable_parameters,
+    build_optimizer_plan
+)
 
 
 class Trainer:
@@ -56,12 +61,12 @@ class Trainer:
         self.tokenizer = None
         self.model_config = None
         self.model = None
-        self.model_num_parameters = None
         self.train_loader = None
         self.val_loader = None
         self.checkpoint_data = None
         self.task = None
         self.task_assets = None
+        self.optimizer_plan = None
 
         self.validate_config()
 
@@ -88,10 +93,10 @@ class Trainer:
         self.build_components()
         self.resolve_checkpoint()
         self.apply_lora()
-        self.compute_model_num_parameters()
         self.build_task()
         self.prepare_model_for_distributed_context()
         self.move_task_assets_to_device()
+        self.build_optimizers_parameter_groups()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -344,6 +349,8 @@ class Trainer:
             if not self.config.lora_enabled:
                 raise ValueError('"lora_enabled" must be set to True when loading checkpoint that includes LoRA')
             self.apply_lora_modification()
+            # by default we freeze the other parameters
+            freeze_non_lora_parameters(self.model)
 
     def apply_lora(self):
         if (
@@ -354,6 +361,8 @@ class Trainer:
             )
         ):
             self.apply_lora_modification()
+            # by default we freeze the other parameters
+            freeze_non_lora_parameters(self.model)
 
     def restore_model_state(self):
         load_model_state(self.model, self.checkpoint_data.model_state)
@@ -366,9 +375,6 @@ class Trainer:
         if checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
             self.train_loader.load_state_dict(checkpoint_data.train_loader_state)
             self.val_loader.load_state_dict(checkpoint_data.val_loader_state)
-
-    def compute_model_num_parameters(self):
-        self.model_num_parameters = get_parameters_count(self.model)
 
     def compile_model(self):
         if self.config.use_torch_compile:
@@ -403,6 +409,11 @@ class Trainer:
     def move_task_assets_to_device(self):
         self.task_assets = self.task.move_assets_to_device(self.task_assets)
 
+    def build_optimizers_parameter_groups(self):
+        named_trainable_parameters = get_model(self.model).get_named_trainable_parameters()
+        parameter_buckers = classify_trainable_parameters(named_trainable_parameters)
+        self.optimizer_plan = build_optimizer_plan(self.config, parameter_buckers)
+
     def train(self):
         self.cleanup()
 
@@ -410,26 +421,3 @@ class Trainer:
         if self.distributed_ctx.ddp:
             dist.barrier()
             destroy_process_group()
-
-
-# from wandb_utils import WandbWrapper
-    # def setup_wandb(self):
-    #     self.wandb = WandbWrapper(
-    #         enabled=self.config.wandb_enabled,
-    #         is_master_process=self.distributed_ctx.is_master_process
-    #     )
-    #     self.wandb.init(
-    #         self.config.wandb_project_name,
-    #         job_name=self.config.wandb_run_name,
-    #         config={
-    #             'batch_size': self.config.max_batch_size,
-    #             'sequence_length': self.config.max_seq_len,
-    #             'min_learning_rate': self.config.min_lr,
-    #             'max_learning_rate': self.config.max_lr
-    #         }
-    #     )
-
-# def should_run(step, every, last_step, run_last_step=True):
-#     if every == -1:
-#         return run_last_step and last_step
-#     return (step > 0 and step % every == 0) or (run_last_step and last_step)

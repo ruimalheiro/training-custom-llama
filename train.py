@@ -202,6 +202,31 @@ if __name__ == "__main__":
     #     logger.info('optimizer state loaded and ready')
 
 
+
+# from wandb_utils import WandbWrapper
+    # def setup_wandb(self):
+    #     self.wandb = WandbWrapper(
+    #         enabled=self.config.wandb_enabled,
+    #         is_master_process=self.distributed_ctx.is_master_process
+    #     )
+    #     self.wandb.init(
+    #         self.config.wandb_project_name,
+    #         job_name=self.config.wandb_run_name,
+    #         config={
+    #             'batch_size': self.config.max_batch_size,
+    #             'sequence_length': self.config.max_seq_len,
+    #             'min_learning_rate': self.config.min_lr,
+    #             'max_learning_rate': self.config.max_lr
+    #         }
+    #     )
+
+# def should_run(step, every, last_step, run_last_step=True):
+#     if every == -1:
+#         return run_last_step and last_step
+#     return (step > 0 and step % every == 0) or (run_last_step and last_step)
+
+
+
     # #### TRAINING LOOP
     # total_tokens = train_loader.calculate_max_tokens()
     # complete_max_steps = math.ceil(total_tokens / total_batch_size)

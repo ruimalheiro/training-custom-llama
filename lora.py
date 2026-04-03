@@ -71,3 +71,11 @@ def apply_lora(
         print(f'- rank: {rank}')
         print(f'- alpha: {alpha}')
         print(f'- dropout: {dropout}')
+
+def is_lora_parameter_name(name):
+    return name.endswith('.A') or name.endswith('.B')
+
+def freeze_non_lora_parameters(model):
+    for name, p in model.get_named_trainable_parameters():
+        if p.requires_grad and not is_lora_parameter_name(name):
+            p.requires_grad_(False)
