@@ -1,6 +1,7 @@
 import torch
 import copy
 
+from dataclasses import dataclass
 from tasks.base import (
     BaseTask,
     TaskStepOutput,
@@ -13,6 +14,10 @@ from dpo_utils import (
 from logger import logger
 
 
+@dataclass
+class DPOTaskAssets(TaskAssets):
+    dpo_ref_model: torch.nn.Module | None = None
+
 class DPOTask(BaseTask):
     name: str = 'dpo'
 
@@ -22,17 +27,24 @@ class DPOTask(BaseTask):
 
     def build_assets(self, tokenizer, model):
         if not self.config.is_dpo_training:
-            return TaskAssets()
-        device = self.ctx.device.device
+            return DPOTaskAssets()
         model_dtype = self.ctx.precision.model_dtype
         logger.info(f'Preparing DPO reference model...', True)
-        dpo_ref_model = copy.deepcopy(model).eval().to(device, dtype=model_dtype).eval()
+        dpo_ref_model = copy.deepcopy(model).eval()
         for p in dpo_ref_model.parameters():
             p.requires_grad = False
         logger.info(f'Finished preparing DPO reference model', True)
-        return TaskAssets(dpo_ref_model=dpo_ref_model)
+        return DPOTaskAssets(dpo_ref_model=dpo_ref_model)
 
-    def train_micro_step(self, model, batch, assets: TaskAssets):
+    def move_assets_to_device(self, assets: DPOTaskAssets) -> DPOTaskAssets:
+        if not assets.dpo_ref_model:
+            return assets
+        device = self.ctx.device.device
+        model_dtype = self.ctx.precision.model_dtype
+        assets.dpo_ref_model = assets.dpo_ref_model.to(device, dtype=model_dtype).eval()
+        return assets
+
+    def train_micro_step(self, model, batch, assets: DPOTaskAssets):
         device = self.ctx.device.device
         device_type = self.ctx.device.device_type
         autocast_dtype = self.ctx.precision.autocast_dtype
@@ -85,7 +97,7 @@ class DPOTask(BaseTask):
         )
 
     @torch.no_grad()
-    def validation_step(self, model, batch, assets: TaskAssets):
+    def validation_step(self, model, batch, assets: DPOTaskAssets):
         device = self.ctx.device.device
         device_type = self.ctx.device.device_type
         autocast_dtype = self.ctx.precision.autocast_dtype

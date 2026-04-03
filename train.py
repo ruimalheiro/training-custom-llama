@@ -162,46 +162,11 @@ if __name__ == "__main__":
     # #### BATCH SIZE ASSERTIONS
     # # COUNT PARAMS
     # # Model distillation setup
-
-    
-
     # # DPO (Direct Preference Optimization) reference model setup
-    # dpo_ref_model = None
-    # if is_dpo_training:
-    #     logger.info(f'Preparing DPO reference model...', True)
-    #     dpo_ref_model = copy.deepcopy(model).eval()
-    #     for p in dpo_ref_model.parameters():
-    #         p.requires_grad = False
-    #     logger.info(f'Finished preparing DPO reference model', True)
-
     # #### COMPILE
-    # if use_torch_compile:
-    #     model.compile()
-    #     if is_dpo_training and dpo_ref_model is not None:
-    #         dpo_ref_model.compile()
-
     # #### PREPARE DDP / FSDP
-    # # for FSDP no need to move as that would actually cost more VRAM, instead let FSDP initialization alocate the shard to the device id (ddp_local_rank).
-    # if use_fsdp and dist.is_initialized():
-    #     logger.info('\nFSDP')
-    #     logger.info('----------------------------------------')
-    #     logger.info('Wrapping the model in preparation for FSDP')
-    #     model = prepare_model_for_fsdp(model, ddp_local_rank, fsdp_mp)
-    #     if is_dpo_training and dpo_ref_model is not None:
-    #         dpo_ref_model = prepare_model_for_fsdp(dpo_ref_model, ddp_local_rank, fsdp_mp)
-    # else:
-    #     # move to gpu
-    #     model.to(device=device, dtype=model_dtype)
-    #     if is_dpo_training and dpo_ref_model is not None:
-    #         dpo_ref_model.to(device, dtype=model_dtype)
 
-    #     if dist.is_initialized():
-    #         logger.info('\nDDP')
-    #         logger.info('----------------------------------------')
-    #         logger.info('Wrapping the model in preparation for DDP')
-    #         model = prepare_model_for_ddp(model, ddp_local_rank)
-    #         if is_dpo_training and dpo_ref_model is not None:
-    #             dpo_ref_model = prepare_model_for_ddp(dpo_ref_model, ddp_local_rank)
+
 
     # #### PREPARE OPTIMIZER OPTIMAL PARAM GROUPS
     # param_groups = get_model(model).build_optimizer_param_groups(weight_decay=weight_decay)

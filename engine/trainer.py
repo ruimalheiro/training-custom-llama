@@ -1,6 +1,8 @@
 import json
 import torch
+import torch.distributed as dist
 
+from torch.distributed import destroy_process_group
 from torch.distributed.fsdp import MixedPrecisionPolicy
 from pathlib import Path
 from logger import logger
@@ -12,7 +14,9 @@ from engine.context import (
 )
 from engine.core import TrainerState
 from ddp_utils import (
-    init_multi_gpu
+    init_multi_gpu,
+    prepare_model_for_ddp,
+    prepare_model_for_fsdp
 )
 from config import (
     DeviceType,
@@ -87,6 +91,7 @@ class Trainer:
         self.compute_model_num_parameters()
         self.build_task()
         self.prepare_model_for_distributed_context()
+        self.move_task_assets_to_device()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -119,12 +124,6 @@ class Trainer:
         self.task = get_task(self.config.training_stage)
         self.task.setup(config=self.config, ctx=self.trainer_ctx)
         self.task_assets = self.task.build_assets(tokenizer=self.tokenizer, model=self.model)
-
-    def prepare_model_for_distributed_context(self):
-        if self.config.use_fsdp:
-            self.wrap_model_for_fsdp()
-        else:
-            self.wrap_model_for_ddp()
 
     def build_distributed_context(self):
         ddp, ddp_rank, ddp_local_rank, ddp_world_size, is_master_process, device = init_multi_gpu(self.config.seed, self.config.device_type.value)
@@ -371,14 +370,46 @@ class Trainer:
     def compute_model_num_parameters(self):
         self.model_num_parameters = get_parameters_count(self.model)
 
-    def wrap_model_for_ddp(self):
-        pass
+    def compile_model(self):
+        if self.config.use_torch_compile:
+            self.model.compile()
 
-    def wrap_model_for_fsdp(self):
-        pass
+    def prepare_model_for_distributed_context(self):
+        device = self.device_ctx.device
+        ddp_local_rank = self.distributed_ctx.ddp_local_rank
+        fsdp_mp = self.precision_ctx.fsdp_mp
+        model_dtype = self.precision_ctx.model_dtype
+
+        if self.config.use_fsdp:
+            if not dist.is_initialized():
+                raise ValueError('dist must be initialized if "USE_FSDP" flag is set.')
+            if self.config.use_torch_compile:
+                raise ValueError('Currently not supporting torch compile for FSDP. Please set "USE_TORCH_COMPILE" flag to False.')
+            logger.info('\nFSDP')
+            logger.info('----------------------------------------')
+            logger.info('Wrapping the model in preparation for FSDP')
+            # for FSDP no need to move explicitly to device here as that would actually cost more VRAM, instead let FSDP initialization alocate the shard to the device id (ddp_local_rank).
+            self.model = prepare_model_for_fsdp(self.model, ddp_local_rank, fsdp_mp)
+        else:
+            # move to gpu
+            self.model.to(device=device, dtype=model_dtype)
+            if dist.is_initialized():
+                logger.info('\nDDP')
+                logger.info('----------------------------------------')
+                logger.info('Wrapping the model in preparation for DDP')
+                self.model = prepare_model_for_ddp(self.model, ddp_local_rank)
+            self.compile_model()
+
+    def move_task_assets_to_device(self):
+        self.task_assets = self.task.move_assets_to_device(self.task_assets)
 
     def train(self):
-        pass
+        self.cleanup()
+
+    def cleanup(self):
+        if self.distributed_ctx.ddp:
+            dist.barrier()
+            destroy_process_group()
 
 
 # from wandb_utils import WandbWrapper
