@@ -1,4 +1,5 @@
 import json
+import math
 import torch
 import torch.distributed as dist
 
@@ -33,7 +34,8 @@ from model import (
 from dataloaders import init_data_loaders
 from checkpoints import (
     load_checkpoint,
-    load_model_state
+    load_model_state,
+    load_optimizer_state
 )
 from lora import (
     apply_lora,
@@ -42,7 +44,9 @@ from lora import (
 from tasks import get_task
 from engine.optim import (
     classify_trainable_parameters,
-    build_optimizer_plan
+    build_optimizer_plan,
+    build_optimizers,
+    move_optimizer_state_to_param_device_and_dtype
 )
 
 
@@ -96,7 +100,10 @@ class Trainer:
         self.build_task()
         self.prepare_model_for_distributed_context()
         self.move_task_assets_to_device()
-        self.build_optimizers_parameter_groups()
+        self.build_optimizer_plan()
+        self.build_optimizers()
+        self.resolve_optimizer_checkpoints()
+        self.compute_max_steps()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -343,14 +350,14 @@ class Trainer:
             device=self.device_ctx.device,
             is_master_process=self.distributed_ctx.is_master_process
         )
+        # by default we freeze the other parameters
+        freeze_non_lora_parameters(self.model)
 
     def apply_lora_for_checkpoint(self):
         if self.checkpoint_data.is_lora_checkpoint:
             if not self.config.lora_enabled:
                 raise ValueError('"lora_enabled" must be set to True when loading checkpoint that includes LoRA')
             self.apply_lora_modification()
-            # by default we freeze the other parameters
-            freeze_non_lora_parameters(self.model)
 
     def apply_lora(self):
         if (
@@ -361,8 +368,6 @@ class Trainer:
             )
         ):
             self.apply_lora_modification()
-            # by default we freeze the other parameters
-            freeze_non_lora_parameters(self.model)
 
     def restore_model_state(self):
         load_model_state(self.model, self.checkpoint_data.model_state)
@@ -409,10 +414,26 @@ class Trainer:
     def move_task_assets_to_device(self):
         self.task_assets = self.task.move_assets_to_device(self.task_assets)
 
-    def build_optimizers_parameter_groups(self):
-        named_trainable_parameters = get_model(self.model).get_named_trainable_parameters()
-        parameter_buckers = classify_trainable_parameters(named_trainable_parameters)
-        self.optimizer_plan = build_optimizer_plan(self.config, parameter_buckers)
+    def build_optimizer_plan(self):
+        parameter_buckets = classify_trainable_parameters(get_model(self.model))
+        self.optimizer_plan = build_optimizer_plan(self.config, parameter_buckets)
+
+    def build_optimizers(self):
+        self.optimizers = build_optimizers(self.config, self.optimizer_plan)
+
+    def resolve_optimizer_checkpoints(self):
+        if not self.checkpoint_data:
+            return
+        # current checkpoints logic assumes only adamW state. Will modify later to support Muon combined.
+        if self.optimizers.adamw and self.checkpoint_data.optimizer_state is not None:
+            load_optimizer_state(self.optimizers.adamw, self.model, self.checkpoint_data.optimizer_state)
+            move_optimizer_state_to_param_device_and_dtype(self.optimizers.adamw)
+            logger.info('AdamW optimizer state loaded and ready')
+
+    def compute_max_steps(self):
+        if self.trainer_state.max_steps <= 0:
+            total_tokens = self.train_loader.calculate_max_tokens()
+            self.trainer_state.max_steps = math.ceil(total_tokens / self.config.total_batch_size)
 
     def train(self):
         self.cleanup()

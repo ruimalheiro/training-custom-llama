@@ -409,6 +409,12 @@ class Transformer(nn.Module):
 
         self.register_buffer('rope_freqs', rope_freqs, persistent=False)
 
+    def get_input_embeddings(self):
+        return self.tok_embeddings
+
+    def get_output_embeddings(self):
+        return self.output
+
     def get_total_parameters_count(self):
         return sum(p.numel() for p in self.parameters())
 

@@ -165,65 +165,12 @@ if __name__ == "__main__":
     # # DPO (Direct Preference Optimization) reference model setup
     # #### COMPILE
     # #### PREPARE DDP / FSDP
-
-
-
     # #### PREPARE OPTIMIZER OPTIMAL PARAM GROUPS
-    # param_groups = get_model(model).build_optimizer_param_groups(weight_decay=weight_decay)
-
-    # logger.info(f'\nOptimizer param group configuration:')
-    # logger.info('----------------------------------------')
-    # logger.info(f'num decayed parameter tensors: {len(param_groups.decay_params)}, with {param_groups.num_decay_params:,} parameters')
-    # logger.info(f'num non-decayed parameter tensors: {len(param_groups.nodecay_params)}, with {param_groups.num_nodecay_params:,} parameters')
-    # if param_groups.lora_params:
-    #     logger.info(f'num lora parameter tensors: {len(param_groups.lora_params)}, with {param_groups.num_lora_params:,} parameters')
-    # logger.info(f'trainable parameters: {param_groups.total_trainable_params:,}')
-
     # #### INIT OPTIMIZER
-    # optimizer = AdamW(
-    #     params=param_groups.optimizer_groups,
-    #     lr=max_lr,
-    #     betas=adamw_betas,
-    #     eps=1e-8,
-    #     fused=use_fused
-    # )
-    # if loaded_optimizer_state is not None:
-    #     assert isinstance(loaded_optimizer_state, dict)
-    #     load_optimizer_state(optimizer, model, loaded_optimizer_state)
-
-    #     # This is to ensure the optimiser state respect the device for all params
-    #     for group in optimizer.param_groups:
-    #         for p in group['params']:
-    #             state = optimizer.state[p]
-    #             for k, v in state.items():
-    #                 if torch.is_tensor(v):
-    #                     state[k] = v.to(device=p.device, dtype=p.dtype)
-
-    #     logger.info('optimizer state loaded and ready')
 
 
 
-# from wandb_utils import WandbWrapper
-    # def setup_wandb(self):
-    #     self.wandb = WandbWrapper(
-    #         enabled=self.config.wandb_enabled,
-    #         is_master_process=self.distributed_ctx.is_master_process
-    #     )
-    #     self.wandb.init(
-    #         self.config.wandb_project_name,
-    #         job_name=self.config.wandb_run_name,
-    #         config={
-    #             'batch_size': self.config.max_batch_size,
-    #             'sequence_length': self.config.max_seq_len,
-    #             'min_learning_rate': self.config.min_lr,
-    #             'max_learning_rate': self.config.max_lr
-    #         }
-    #     )
 
-# def should_run(step, every, last_step, run_last_step=True):
-#     if every == -1:
-#         return run_last_step and last_step
-#     return (step > 0 and step % every == 0) or (run_last_step and last_step)
 
 
 
@@ -248,6 +195,8 @@ if __name__ == "__main__":
     #         **config.model_dump(),
     #     ))
 
+
+
     # if ddp:
     #     dist.barrier()
 
@@ -263,20 +212,29 @@ if __name__ == "__main__":
     # abort_if_no_improve = torch.tensor([0], device=device)
     # early_stopping_patience_skip_steps += start_step
 
-    # task = get_task(config.training_stage)
-    # task.setup(
-    #     config=config,
-    #     ctx=TrainerContext(
-    #         device=device,
-    #         device_type=device_type,
-    #         use_autocast=use_autocast,
-    #         autocast_dtype=autocast_dtype,
-    #         grad_accum_steps=grad_accum_steps,
-    #         scaler=scaler
-    #     ),
-    #     dpo_ref_model=dpo_ref_model,
-    #     teacher_model=teacher_model
-    # )
+
+    # from wandb_utils import WandbWrapper
+    # def setup_wandb(self):
+    #     self.wandb = WandbWrapper(
+    #         enabled=self.config.wandb_enabled,
+    #         is_master_process=self.distributed_ctx.is_master_process
+    #     )
+    #     self.wandb.init(
+    #         self.config.wandb_project_name,
+    #         job_name=self.config.wandb_run_name,
+    #         config={
+    #             'batch_size': self.config.max_batch_size,
+    #             'sequence_length': self.config.max_seq_len,
+    #             'min_learning_rate': self.config.min_lr,
+    #             'max_learning_rate': self.config.max_lr
+    #         }
+    #     )
+
+    # def should_run(step, every, last_step, run_last_step=True):
+    #     if every == -1:
+    #         return run_last_step and last_step
+    #     return (step > 0 and step % every == 0) or (run_last_step and last_step)
+
 
     # def trace_handler(prof):
     #     if config.torch_profiler_tensorboard_enabled:
