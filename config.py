@@ -92,13 +92,20 @@ class TrainConfig(BaseSettings):
     training_precision: TrainingPrecision = Field(default=TrainingPrecision.BF16, alias='TRAINING_PRECISION')
     training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')
-    max_lr: float = Field(alias='MAX_LR')
-    min_lr: float = Field(alias='MIN_LR')
-    warmup_steps: int = Field(alias='WARMUP_STEPS')
-    weight_decay: float = Field(alias='WEIGHT_DECAY')
     max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
+    warmup_steps: int = Field(alias='WARMUP_STEPS')
+    min_lr: float = Field(alias='MIN_LR')
+
+    adamw_max_lr: float = Field(alias='ADAMW_MAX_LR')
+    adamw_weight_decay: float = Field(alias='ADAMW_WEIGHT_DECAY')
     adamw_betas: Tuple[float, float] = Field(default=(0.9, 0.95), alias='ADAMW_BETAS')
     adamw_use_fused: Annotated[bool | None, Field(alias='ADAMW_USE_FUSED')] = None
+
+    use_muon: bool = Field(default=False, alias='USE_MUON')
+    muon_max_lr: float = Field(alias='MUON_MAX_LR')
+    muon_weight_decay: float = Field(alias='MUON_WEIGHT_DECAY')
+    muon_momentum: float = Field(alias='MUON_MOMENTUM', default=0.95)
+
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
     dpo_beta: float = Field(default=0.1, alias='DPO_BETA')

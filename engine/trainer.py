@@ -33,6 +33,7 @@ from model import (
 )
 from dataloaders import init_data_loaders
 from checkpoints import (
+    save_checkpoint,
     load_checkpoint,
     load_model_state,
     load_optimizer_state
@@ -46,7 +47,7 @@ from engine.optim import (
     classify_trainable_parameters,
     build_optimizer_plan,
     build_optimizers,
-    move_optimizer_state_to_param_device_and_dtype
+    move_optimizer_state_to_param_device
 )
 
 
@@ -102,8 +103,9 @@ class Trainer:
         self.move_task_assets_to_device()
         self.build_optimizer_plan()
         self.build_optimizers()
-        self.resolve_optimizer_checkpoints()
-        self.compute_max_steps()
+        self.resolve_optimizers_checkpoint()
+        self.build_schedulers()
+        self.prepare_runtime()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -315,12 +317,12 @@ class Trainer:
         checkpoint_data = load_checkpoint(
             path,
             name,
-            reset_optimizer=args.reset_optimizer,
+            reset_optimizers=args.reset_optimizers,
             force_start_step=args.start_step,
             is_master_process=self.distributed_ctx.is_master_process
         )
 
-        if not args.reset_optimizer:
+        if not args.reset_optimizers:
             self.trainer_state.best_val_loss = checkpoint_data.best_val_loss
 
         if checkpoint_data.metadata.get('training_stage', None) != self.config.training_stage.value:
@@ -332,9 +334,9 @@ class Trainer:
                 logger.info('ignoring stored metadata for dataset...')
                 checkpoint_data.train_loader_state = None
                 checkpoint_data.val_loader_state = None
-            if checkpoint_data.optimizer_state is not None:
-                logger.info('ignoring stored state of optimizer...')
-                checkpoint_data.optimizer_state = None
+            if checkpoint_data.optimizers_state is not None:
+                logger.info('ignoring stored state of optimizer(s)...')
+                checkpoint_data.optimizers_state = None
             logger.info('\n')
         
         self.checkpoint_data = checkpoint_data
@@ -421,16 +423,23 @@ class Trainer:
     def build_optimizers(self):
         self.optimizers = build_optimizers(self.config, self.optimizer_plan)
 
-    def resolve_optimizer_checkpoints(self):
+    def resolve_optimizers_checkpoint(self):
         if not self.checkpoint_data:
             return
-        # current checkpoints logic assumes only adamW state. Will modify later to support Muon combined.
-        if self.optimizers.adamw and self.checkpoint_data.optimizer_state is not None:
-            load_optimizer_state(self.optimizers.adamw, self.model, self.checkpoint_data.optimizer_state)
-            move_optimizer_state_to_param_device_and_dtype(self.optimizers.adamw)
-            logger.info('AdamW optimizer state loaded and ready')
+        if self.optimizers.adamw and self.checkpoint_data.optimizers_state is not None:
+            if self.checkpoint_data.optimizers_state['adamw']:
+                load_optimizer_state(self.optimizers.adamw, self.model, self.checkpoint_data.optimizers_state['adamw'])
+                move_optimizer_state_to_param_device(self.optimizers.adamw)
+                logger.info('AdamW optimizer state loaded and ready')
+            if self.checkpoint_data.optimizers_state['muon']:
+                load_optimizer_state(self.optimizers.muon, self.model, self.checkpoint_data.optimizers_state['muon'])
+                move_optimizer_state_to_param_device(self.optimizers.muon)
+                logger.info('Muon optimizer state loaded and ready')
 
-    def compute_max_steps(self):
+    def build_schedulers(self):
+        pass
+
+    def prepare_runtime(self):
         if self.trainer_state.max_steps <= 0:
             total_tokens = self.train_loader.calculate_max_tokens()
             self.trainer_state.max_steps = math.ceil(total_tokens / self.config.total_batch_size)

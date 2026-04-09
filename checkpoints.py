@@ -51,7 +51,7 @@ def save_checkpoint(
     config,
     step,
     val_loss_accum,
-    optimizer,
+    optimizers,
     train_loader,
     val_loader,
     extra_metadata,
@@ -59,19 +59,33 @@ def save_checkpoint(
     is_master_process,
     pbar=None
 ):
+    optimizer_state = {'adamw': None, 'muon': None}
     if dist.is_initialized():
-        # ensures we materialize both model / optimizer fully before we attempt to save
+        # ensures we materialize both model / optimizers fully before we attempt to save
         options = StateDictOptions(full_state_dict=True, cpu_offload=True)
         dist.barrier()
         model_state_dict = get_model_state_dict(model, options=options)
-        optimizer_state_dict = get_optimizer_state_dict(model, optimizer, options=options)
+
+        if optimizers.adamw:
+            optimizer_state['adamw'] = get_optimizer_state_dict(model, optimizers.adamw, options=options)
+        if optimizers.muon:
+            optimizer_state['muon'] = get_optimizer_state_dict(model, optimizers.muon, options=options)
+
         dist.barrier() # we need all ranks to be sync and participate in the above
     else:
         model_state_dict = model.state_dict()
-        optimizer_state_dict = optimizer.state_dict()
+
+        if optimizers.adamw:
+            optimizer_state['adamw'] = optimizers.adamw.state_dict()
+        if optimizers.muon:
+            optimizer_state['muon'] = optimizers.muon.state_dict()
 
     model_state_dict = state_to_cpu(model_state_dict)
-    optimizer_state_dict = state_to_cpu(optimizer_state_dict)
+
+    if optimizer_state['adamw']:
+        optimizer_state['adamw'] = state_to_cpu(optimizer_state['adamw'])
+    if optimizer_state['muon']:
+        optimizer_state['muon'] = state_to_cpu(optimizer_state['muon'])
 
     if is_master_process:
         checkpoint_path = os.path.join(checkpoint_dir, f'model_{step}.pt')
@@ -81,7 +95,7 @@ def save_checkpoint(
             'model': model_state_dict,
             'step': step,
             'config': config.to_dict(),
-            'optimizer': optimizer_state_dict,
+            'optimizers': optimizer_state,
             'val_loss': val_loss_accum,
             'train_dl': train_loader.state_dict(),
             'val_dl': val_loader.state_dict(),
@@ -98,7 +112,7 @@ class CheckpointData:
     path: str | None = None
     checkpoint_name: str | None = None
     model_state: dict[str, Any] | None = None
-    optimizer_state: dict[str, Any] | None = None
+    optimizers_state: dict[str, Any] | None = None
     start_step: int = 0
     best_val_loss: float = float('inf')
     train_loader_state: Any = None
@@ -109,7 +123,7 @@ class CheckpointData:
 def load_checkpoint(
     checkpoint_dir,
     checkpoint,
-    reset_optimizer=False,
+    reset_optimizers=False,
     force_start_step=None,
     is_master_process=True
 ):
@@ -122,10 +136,13 @@ def load_checkpoint(
     model_state = state['model']
     assert type(model_state) in {OrderedDict, dict}
 
-    optimizer_state = None
-    if not reset_optimizer:
-        optimizer_state = state['optimizer']
-        assert type(optimizer_state) == dict
+    optimizers_state = None
+    if not reset_optimizers:
+        optimizers_state = state['optimizers']
+        if optimizers_state['adamw']:
+            assert type(optimizers_state['adamw']) == dict
+        if optimizers_state['muon']:
+            assert type(optimizers_state['muon']) == dict
 
     if force_start_step is not None:
         step = force_start_step
@@ -139,8 +156,12 @@ def load_checkpoint(
         logger.info('\nModel checkpoint loading')
         logger.info('----------------------------------------')
         logger.info(f'model state loaded from checkpoint: "{checkpoint}"')
-        if optimizer_state is not None:
-            logger.info(f'optimizer state loaded from checkpoint')
+        if optimizers_state is not None:
+            logger.info(f'optimizers state loaded from checkpoint')
+            if optimizers_state['adamw']:
+                logger.info('-- loaded state for adamW')
+            if optimizers_state['muon']:
+                logger.info('-- loaded state for Muon')
 
         if train_dl_state is not None and val_dl_state is not None:
             logger.info('Dataloaders state loaded')
@@ -178,7 +199,7 @@ def load_checkpoint(
         path=checkpoint_dir,
         checkpoint_name=checkpoint,
         model_state=model_state,
-        optimizer_state=optimizer_state,
+        optimizers_state=optimizers_state,
         start_step=step,
         best_val_loss=loss,
         train_loader_state=train_dl_state,
