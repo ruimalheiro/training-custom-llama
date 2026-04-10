@@ -99,7 +99,7 @@ def save_checkpoint(
             'model': model_state_dict,
             'step': step,
             'model_config': model_config.to_dict(),
-            'config': config.model_dump_json(exclude={'wandb_api_key', 'hf_token'}),
+            'config': config.to_summary_dict(include_model_config=False),
             'optimizers': optimizer_state,
             'last_val_loss': float(last_val_loss),
             'best_val_loss': float(best_val_loss),
@@ -198,7 +198,7 @@ def load_checkpoint(
         try:
             logger.info('\nLoaded config')
             logger.info('----------------------------------------')
-            logger.info(json.loads(state['config']), is_json=True)
+            logger.info(state['config'], is_json=True)
 
             logger.info('\nLoaded model config')
             logger.info('----------------------------------------')

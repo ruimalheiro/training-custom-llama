@@ -4,7 +4,9 @@ import torch
 import torch.distributed as dist
 
 from torch.distributed import destroy_process_group
+from torch.distributed.tensor import DTensor
 from torch.distributed.fsdp import MixedPrecisionPolicy
+from torch.nn.utils import clip_grad_norm_
 from pathlib import Path
 from logger import logger
 from engine.context import (
@@ -52,6 +54,7 @@ from engine.optim import (
 from engine.logging import (
     prepare_workload_summary
 )
+from wandb_utils import WandbWrapper
 
 
 class Trainer:
@@ -115,6 +118,7 @@ class Trainer:
         self.prepare_workload_summary_json()
         self.log_workload_summary()
         self.check_all_devices_ready()
+        self.setup_wandb()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -478,6 +482,17 @@ class Trainer:
             logger.info(self.workload_summary, is_json=True)
             logger.info('--------------------------------------------------------')
 
+    def setup_wandb(self):
+        self.wandb = WandbWrapper(
+            enabled=self.config.wandb_enabled,
+            is_master_process=self.distributed_ctx.is_master_process
+        )
+        self.wandb.init(
+            self.config.wandb_project_name,
+            job_name=self.config.wandb_run_name,
+            config=self.workload_summary
+        )
+
     def check_all_devices_ready(self):
         if self.distributed_ctx.ddp and dist.is_initialized():
             dist.barrier()
@@ -504,7 +519,23 @@ class Trainer:
             pbar
         )
 
+    def should_run(self, step, every, last_step, run_last_step=True):
+        if every == -1:
+            return run_last_step and last_step
+        return (step > 0 and step % every == 0) or (run_last_step and last_step)
+
+    def clip_grad_norm(self, model, max_norm):
+        norm = clip_grad_norm_(model.parameters(), max_norm)
+        if isinstance(norm, DTensor):
+            return norm.to_local()
+        return norm
+
     def start_training_loop(self):
+        device = self.trainer_ctx.device.device
+        tqdm_label = f'Training ({self.config.training_stage.value})'
+        abort_if_no_improve = torch.tensor([0], device=device)
+        early_stopping_patience_skip_steps = self.config.early_stopping_patience_skip_steps + self.trainer_state.start_step
+
         self.trigger_save_checkpoint() # DUMMY CALL FOR DEBUGGING. WILL ME REMOVED.
 
     def cleanup(self):

@@ -20,10 +20,8 @@ def prepare_workload_summary(
     model_trainable_params_count: int,
     total_tokens: int
 ):
-    _config = config.model_dump(exclude={'wandb_api_key', 'hf_token'})
-    _config.pop('model_config')
-
     if config.training_stage == TrainingStage.PRETRAIN or config.training_stage == TrainingStage.INSTRUCT:
+        # For pretraining according to the Chinchilla paper ~20.0 is reasonable. For instruct: ~0.2 to ~0.5 is reasonable
         m_factor = 20.0 if config.training_stage == TrainingStage.PRETRAIN else 0.3
         tokens_required_for_model_size = int(model_params_count * m_factor)
         steps_needed = math.ceil(tokens_required_for_model_size / config.total_batch_size)
@@ -52,7 +50,7 @@ def prepare_workload_summary(
         }
 
     summary = {
-        'config': _config,
+        'config': config.to_summary_dict(include_model_config=False),
         'model_config': model_config.to_dict(),
         'checkpoint_data': checkpoint_data.to_dict() if checkpoint_data else None,
         'trainer_ctx': trainer_ctx.to_dict(),

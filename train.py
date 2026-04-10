@@ -1,80 +1,10 @@
-import os
-import torch
-import torch.distributed as dist
 import argparse
-import math
-import copy
-import json
-import inspect
 
-from config import (
-    config,
-    TrainingStage
-)
-os.environ['HF_HOME'] = config.hf_home
-os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
-os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
-
-from pathlib import Path
-from tokenizer import init_tokenizer
-from dataloaders import init_data_loaders
-from tqdm import tqdm
-from transformers import AutoModelForCausalLM
-from lora import apply_lora
-from lr_schedulers import cosine_scheduler
-from wandb_utils import WandbWrapper
-from contextlib import nullcontext
-from types import SimpleNamespace
-
-from torch.optim import AdamW
-from torch.distributed import (
-    broadcast,
-    destroy_process_group
-)
-from torch.profiler import (
-    profile,
-    ProfilerActivity,
-    schedule,
-    tensorboard_trace_handler
-)
-from ddp_utils import (
-    init_multi_gpu,
-    prepare_model_for_ddp,
-    prepare_model_for_fsdp,
-    get_model
-)
-from model import (
-    Transformer,
-    ModelConfig
-)
-from generate import generate_and_decode
-from checkpoints import (
-    save_checkpoint,
-    load_checkpoint,
-    load_model_state,
-    load_optimizer_state
-)
-# from model_utils import (
-#     # get_parameters_count,
-#     # clip_grad_norm,
-#     log_workload_summary
-# )
-from hellaswag_utils import (
-    load_hellaswag_file,
-    estimate_correct_candidate_selection
-)
-from logger import logger
+from config import config
 from engine import Trainer
-from metrics import (
-    collect_moe_metrics,
-    accumulate_weighted_metrics,
-    combine_weighted_metrics
-)
-from tasks import get_task
 
 
-if __name__ == "__main__":
-    #### SCRIPT OPTIONS
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Script options')
     parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
     parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
@@ -147,6 +77,8 @@ if __name__ == "__main__":
     # hellaswag_number_of_examples = config.hellaswag_number_of_examples
     # generate_every_x_steps = config.generate_every_x_steps
     # max_test_gen_len = config.max_test_gen_len
+
+
     # # test prompts
     # # Init the tokenizer
     # # Extra metadata to store when saving a checkpoint
@@ -170,52 +102,8 @@ if __name__ == "__main__":
     # COMPUTE TOKENS
     # COMPUTE MAX STEPS
     # DEVICE READY CHECK
-
     # # Workload summary
-    # if is_master_process:
-    #     log_workload_summary(SimpleNamespace(
-    #         checkpoint=checkpoint,
-    #         load_checkpoints_path=load_checkpoints_path,
-    #         optimizers=[('adamw', optimizer)],
-    #         start_step=start_step,
-    #         model_params_counts=model_params_counts,
-    #         ddp_world_size=ddp_world_size,
-    #         grad_accum_steps=grad_accum_steps,
-    #         total_tokens=total_tokens,
-    #         complete_max_steps=complete_max_steps,
-    #         test_generation_prompts=test_generation_prompts,
-    #         model_config=model_config.to_dict(),
-    #         **config.model_dump(),
-    #     ))
 
-
-    # tqdm_label = f'Training ({training_stage.value})'
-    # epochs_no_improve = 0
-    # abort_if_no_improve = torch.tensor([0], device=device)
-    # early_stopping_patience_skip_steps += start_step
-
-
-    # from wandb_utils import WandbWrapper
-    # def setup_wandb(self):
-    #     self.wandb = WandbWrapper(
-    #         enabled=self.config.wandb_enabled,
-    #         is_master_process=self.distributed_ctx.is_master_process
-    #     )
-    #     self.wandb.init(
-    #         self.config.wandb_project_name,
-    #         job_name=self.config.wandb_run_name,
-    #         config={
-    #             'batch_size': self.config.max_batch_size,
-    #             'sequence_length': self.config.max_seq_len,
-    #             'min_learning_rate': self.config.min_lr,
-    #             'max_learning_rate': self.config.max_lr
-    #         }
-    #     )
-
-    # def should_run(step, every, last_step, run_last_step=True):
-    #     if every == -1:
-    #         return run_last_step and last_step
-    #     return (step > 0 and step % every == 0) or (run_last_step and last_step)
 
 
     # def trace_handler(prof):
@@ -508,31 +396,3 @@ if __name__ == "__main__":
     # if ddp:
     #     dist.barrier()
     #     destroy_process_group()
-
-
-
-
-
-# import torch
-# from torch.distributed.tensor import DTensor
-
-# def clip_grad_norm(model, max_norm):
-#     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-#     if isinstance(norm, DTensor):
-#         return norm.to_local()
-#     return norm
-
-
-    # logger.info(f'min learning rate: {c.min_lr}')
-    # logger.info('Optimizers:')
-    # if c.optimizers.adamw:
-    #     logger.info(f'  AdamW:')
-    #     adamw = c.optimizers.adamw
-    #     logger.info(f'    using fused AdamW: {adamw.defaults["fused"]}')
-    #     logger.info(f'    LR set in the optimizer: {adamw.param_groups[0]["lr"]:.4e}')
-    #     logger.info(f'    betas for AdamW: {c.adamw_betas}')
-    #     scheduled_lr = cosine_scheduler(c.start_step, c.min_lr, c.adamw_max_lr, c.warmup_steps, c.max_steps)
-    #     logger.info(f'    (scheduler) LR that will be applied for step {c.start_step}: {scheduled_lr:.4e}')
-    #     logger.info(f'    max learning rate: {c.adamw_max_lr}')
-    #     logger.info(f'    weight decay: {c.adamw_weight_decay}')
-    #     logger.info('   --')
