@@ -1,10 +1,7 @@
-import torch
-
-from pydantic import Field, ConfigDict
+from pydantic import Field, ConfigDict, model_serializer
 from pydantic_settings import BaseSettings
 from enum import Enum
 from typing import Tuple, Annotated
-from torch.distributed.fsdp import MixedPrecisionPolicy
 
 
 class DeviceType(str, Enum):
@@ -160,8 +157,6 @@ class TrainConfig(BaseSettings):
     dataloader_root_path: str = Field(default='', repr=False)
     save_checkpoints_path: str = Field(default='', repr=False)
 
-    use_autocast: bool = Field(default=False, repr=False)
-
     def model_post_init(self, __context: any) -> None:
         self.is_pretraining = self.training_stage == TrainingStage.PRETRAIN
         self.is_instruct_training = self.training_stage == TrainingStage.INSTRUCT
@@ -179,9 +174,150 @@ class TrainConfig(BaseSettings):
         else:
             raise ValueError(f'Invalid training stage: {self.training_stage}')
 
-        self.use_autocast = self.training_precision in {
-            TrainingPrecision.BF16,
-            TrainingPrecision.FP16,
+    @model_serializer
+    def custom_dump(self):
+        return {
+            'third_part': {
+                'hf_home': self.hf_home
+            },
+            'runtime': {
+                'number_of_cpu_processes': self.number_of_cpu_processes,
+                'mp_pool_chunk_size': self.mp_pool_chunk_size,
+                'hf_map_batch_size': self.hf_map_batch_size,
+                'hf_map_writer_batch_size': self.hf_map_writer_batch_size,
+                'use_torch_compile': self.use_torch_compile,
+                'use_fsdp': self.use_fsdp
+            },
+            'torch_profiler': {
+                'torch_profiler_enabled': self.torch_profiler_enabled,
+                'torch_profiler_schedule_skip_first': self.torch_profiler_schedule_skip_first,
+                'torch_profiler_schedule_wait': self.torch_profiler_schedule_wait,
+                'torch_profiler_schedule_warmup': self.torch_profiler_schedule_warmup,
+                'torch_profiler_schedule_active': self.torch_profiler_schedule_active,
+                'torch_profiler_schedule_repeat': self.torch_profiler_schedule_repeat,
+                'torch_profiler_tensorboard_enabled': self.torch_profiler_tensorboard_enabled,
+                'torch_profiler_tensorboard_log_path': self.torch_profiler_tensorboard_log_path
+            },
+            'datasets': {
+                'pretrain_dataset_mix_file': self.pretrain_dataset_mix_file,
+                'pretrain_dataset_target_path': self.pretrain_dataset_target_path,
+                'instruct_dataset_mix_file': self.instruct_dataset_mix_file,
+                'instruct_dataset_target_path': self.instruct_dataset_target_path,
+                'dpo_dataset_mix_file': self.dpo_dataset_mix_file,
+                'dpo_dataset_target_path': self.dpo_dataset_target_path,
+                'hf_include_source_id': self.hf_include_source_id
+            },
+            'eval_data': {
+                'hellaswag_path': self.hellaswag_path,
+                'test_prompts_path': self.test_prompts_path
+            },
+            'dataloaders': {
+                'pretrain_dataloader_root_path': self.pretrain_dataloader_root_path,
+                'instruct_dataloader_root_path': self.instruct_dataloader_root_path,
+                'dpo_dataloader_root_path': self.dpo_dataloader_root_path,
+                'dataloader_root_path': self.dataloader_root_path
+            },
+            'checkpoints': {
+                'pretrain_save_checkpoints_path': self.pretrain_save_checkpoints_path,
+                'pretrain_load_checkpoints_path': self.pretrain_load_checkpoints_path,
+                'instruct_save_checkpoints_path': self.instruct_save_checkpoints_path,
+                'instruct_load_checkpoints_path': self.instruct_load_checkpoints_path,
+                'dpo_save_checkpoints_path': self.dpo_save_checkpoints_path,
+                'dpo_load_checkpoints_path': self.dpo_load_checkpoints_path,
+                'save_checkpoints': self.save_checkpoints,
+                'max_number_checkpoints': self.max_number_checkpoints
+            },
+            'wandb': {
+                'wandb_enabled': self.wandb_enabled,
+                'wandb_project_name': self.wandb_project_name,
+                'wandb_run_name': self.wandb_run_name
+            },
+            'system_prompt': self.system_prompt,
+            'tokenizer': {
+                'huggingface_tokenizer': self.huggingface_tokenizer,
+                'tokenizer_checkpoint_path': self.tokenizer_checkpoint_path
+            },
+            'padding': {
+                'ignore_index': self.ignore_index
+            },
+            'distillation_config': {
+                'is_model_distillation': self.is_model_distillation,
+                'distillation_temperature': self.distillation_temperature,
+                'teacher_model_checkpoint': self.teacher_model_checkpoint
+            },
+            'dpo_config': {
+                'dpo_beta': self.dpo_beta
+            },
+            'lora': {
+                'lora_enabled': self.lora_enabled,
+                'lora_rank': self.lora_rank,
+                'lora_alpha': self.lora_alpha,
+                'lora_dropout': self.lora_dropout,
+                'lora_target_modules': self.lora_target_modules
+            },
+            'optimizers_config': {
+                'adamw': {
+                    'adamw_max_lr': self.adamw_max_lr,
+                    'adamw_weight_decay': self.adamw_weight_decay,
+                    'adamw_betas': self.adamw_betas,
+                    'adamw_use_fused': self.adamw_use_fused
+                },
+                'muon': {
+                    'use_muon': self.use_muon,
+                    'muon_max_lr': self.muon_max_lr,
+                    'muon_weight_decay': self.muon_weight_decay,
+                    'muon_momentum': self.muon_momentum
+                }
+            },
+            'training_config': {
+                'seed': self.seed,
+                'training_stage': self.training_stage,
+                'device_type': self.device_type,
+                'training_precision': self.training_precision,
+                'total_batch_size': self.total_batch_size,
+                'max_steps': self.max_steps,
+                'warmup_steps': self.warmup_steps,
+                'min_lr': self.min_lr,
+                'early_stopping_patience': self.early_stopping_patience,
+                'early_stopping_patience_skip_steps': self.early_stopping_patience_skip_steps,
+            },
+            'validation_config': {
+                'validate_every_x_steps': self.validate_every_x_steps,
+                'val_steps': self.val_steps,
+                'hellaswag_every_x_steps': self.hellaswag_every_x_steps,
+                'hellaswag_number_of_examples': self.hellaswag_number_of_examples
+            },
+            'generation_config': {
+                'generate_every_x_steps': self.generate_every_x_steps,
+                'max_test_gen_len': self.max_test_gen_len
+            },
+            'derived': {
+                'is_pretraining': self.is_pretraining,
+                'is_instruct_training': self.is_instruct_training,
+                'is_dpo_training': self.is_dpo_training,
+                'dataloader_root_path': self.dataloader_root_path,
+                'save_checkpoints_path': self.save_checkpoints_path
+            },
+            'model_config': {
+                'dim': self.dim,
+                'n_layers': self.n_layers,
+                'n_heads': self.n_heads,
+                'n_kv_heads': self.n_kv_heads,
+                'multiple_of': self.multiple_of,
+                'ffn_dim_multiplier': self.ffn_dim_multiplier,
+                'norm_eps': self.norm_eps,
+                'is_rope_cis': self.is_rope_cis,
+                'rope_theta': self.rope_theta,
+                'max_batch_size': self.max_batch_size,
+                'max_seq_len': self.max_seq_len,
+                'is_moe': self.is_moe,
+                'moe_num_experts': self.moe_num_experts,
+                'moe_expert_dim': self.moe_expert_dim,
+                'moe_top_k': self.moe_top_k,
+                'moe_load_balancing_coef': self.moe_load_balancing_coef,
+                'moe_z_loss_coef': self.moe_z_loss_coef,
+                'moe_compute_stats': self.moe_compute_stats
+            }
         }
 
     model_config = ConfigDict(

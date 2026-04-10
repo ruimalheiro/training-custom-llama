@@ -1,6 +1,8 @@
 import torch
 import os
 import torch.distributed as dist
+import json
+import math
 
 from collections import OrderedDict
 from torch.distributed.checkpoint.state_dict import (
@@ -26,7 +28,7 @@ def state_to_cpu(obj):
         return t(state_to_cpu(v) for v in obj)
     return obj
 
-def manage_checkpoints(directory, current_step, max_files, pbar=None):
+def manage_checkpoints(directory, max_files, pbar=None):
     # List all checkpoint files
     checkpoints = [os.path.join(directory, file) for file in os.listdir(directory) if file.startswith('model_')]
     # Extract steps from filenames and pair them
@@ -48,9 +50,11 @@ def manage_checkpoints(directory, current_step, max_files, pbar=None):
 def save_checkpoint(
     checkpoint_dir,
     model,
+    model_config,
     config,
     step,
-    val_loss_accum,
+    last_val_loss,
+    best_val_loss,
     optimizers,
     train_loader,
     val_loader,
@@ -94,9 +98,11 @@ def save_checkpoint(
         checkpoint = {
             'model': model_state_dict,
             'step': step,
-            'config': config.to_dict(),
+            'model_config': model_config.to_dict(),
+            'config': config.model_dump_json(exclude={'wandb_api_key', 'hf_token'}),
             'optimizers': optimizer_state,
-            'val_loss': val_loss_accum,
+            'last_val_loss': float(last_val_loss),
+            'best_val_loss': float(best_val_loss),
             'train_dl': train_loader.state_dict(),
             'val_dl': val_loader.state_dict(),
             'metadata': extra_metadata
@@ -105,7 +111,7 @@ def save_checkpoint(
         torch.save(checkpoint, checkpoint_path)
         logger.info(f'Saved checkpoint: {checkpoint_path}', pbar)
 
-        manage_checkpoints(checkpoint_dir, current_step=step, max_files=max_number_checkpoints, pbar=pbar)
+        manage_checkpoints(checkpoint_dir, max_files=max_number_checkpoints, pbar=pbar)
 
 @dataclass
 class CheckpointData:
@@ -114,11 +120,26 @@ class CheckpointData:
     model_state: dict[str, Any] | None = None
     optimizers_state: dict[str, Any] | None = None
     start_step: int = 0
+    last_val_loss: float = float('inf')
     best_val_loss: float = float('inf')
     train_loader_state: Any = None
     val_loader_state: Any = None
     is_lora_checkpoint: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self):
+        return {
+            'path': self.path,
+            'checkpoint_name': self.checkpoint_name,
+            'start_step': self.start_step,
+            'last_val_loss': self.last_val_loss if not math.isinf(self.last_val_loss) else None,
+            'best_val_loss': self.best_val_loss if not math.isinf(self.best_val_loss) else None,
+            'is_lora_checkpoint': self.is_lora_checkpoint,
+            'metadata': self.metadata
+        }
+
+    def __repr__(self):
+        return json.dumps(self.to_dict(), indent=4)
 
 def load_checkpoint(
     checkpoint_dir,
@@ -131,7 +152,8 @@ def load_checkpoint(
     state = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
 
     step = state['step'] + 1
-    loss = state['val_loss']
+    last_val_loss = state['last_val_loss']
+    best_val_loss = state['best_val_loss']
 
     model_state = state['model']
     assert type(model_state) in {OrderedDict, dict}
@@ -174,16 +196,21 @@ def load_checkpoint(
             logger.info({key: val_dl_state[key] for key in _valid_keys if key in val_dl_state})
 
         try:
-            logger.info('\nModel config')
+            logger.info('\nLoaded config')
             logger.info('----------------------------------------')
-            logger.info(state['config'], is_json=True)
+            logger.info(json.loads(state['config']), is_json=True)
+
+            logger.info('\nLoaded model config')
+            logger.info('----------------------------------------')
+            logger.info(state['model_config'], is_json=True)
         except:
             logger.info('Error printing the config. Potential serialization problem. Should be resolved in the next save attempt.')
         if step > 0:
             logger.info(f'\nResuming from step: {step}')
         else:
             logger.info(f'\nStarting from step: 0')
-        logger.info(f'Last calculated loss: {loss:.4f}')
+        logger.info(f'Last calculated loss: {last_val_loss:.4f}')
+        logger.info(f'Last calculated best loss: {best_val_loss:.4f}')
 
         logger.info('\nExtra metadata stored in the checkpoint:')
         logger.info(metadata, is_json=True)
@@ -201,7 +228,8 @@ def load_checkpoint(
         model_state=model_state,
         optimizers_state=optimizers_state,
         start_step=step,
-        best_val_loss=loss,
+        last_val_loss=last_val_loss,
+        best_val_loss=best_val_loss,
         train_loader_state=train_dl_state,
         val_loader_state=val_dl_state,
         is_lora_checkpoint=metadata.get('lora_enabled', False),

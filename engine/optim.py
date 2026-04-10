@@ -1,4 +1,5 @@
 import torch
+import re
 
 from torch.optim import AdamW, Muon
 from dataclasses import dataclass, field
@@ -6,6 +7,11 @@ from lora import is_lora_parameter_name
 from typing import Literal
 from logger import logger
 
+
+def compress_list(raw_list):
+    pattern = r'\.\d+\.'
+    compressed_with_duplicates = [re.sub(pattern, '.X.', item) for item in raw_list]
+    return list(dict.fromkeys(compressed_with_duplicates))
 
 @dataclass
 class NamedParam:
@@ -40,6 +46,17 @@ class ParameterGroupPlan:
     def num_params(self) -> int:
         return sum(p.numel() for p in self.params)
 
+    def to_dict(self):
+        return {
+            'group_name': self.group_name,
+            'weight_decay': self.weight_decay,
+            'lr_scale': self.lr_scale,
+            'param_names': compress_list(self.param_names),
+        }
+
+    def __repr__(self):
+        return json.dumps(self.to_dict(), indent=4)
+
 @dataclass
 class AdamWPlan:
     lr: float
@@ -47,6 +64,17 @@ class AdamWPlan:
     betas: tuple[float, float]
     optimizer_name: Literal['adamw'] = 'adamw'
     groups: list[ParameterGroupPlan] = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            'lr': self.lr,
+            'weight_decay': self.weight_decay,
+            'betas': self.betas,
+            'groups': [g.to_dict() for g in self.groups]
+        }
+
+    def __repr__(self):
+        return json.dumps(self.to_dict(), indent=4)
 
 @dataclass
 class MuonPlan:
@@ -57,11 +85,32 @@ class MuonPlan:
     adjust_lr_fn: Literal['original', 'match_rms_adamw'] = 'match_rms_adamw'
     groups: list[ParameterGroupPlan] = field(default_factory=list)
 
+    def to_dict(self):
+        return {
+            'lr': self.lr,
+            'weight_decay': self.weight_decay,
+            'momentum': self.momentum,
+            'adjust_lr_fn': self.adjust_lr_fn,
+            'groups': [g.to_dict() for g in self.groups]
+        }
+
+    def __repr__(self):
+        return json.dumps(self.to_dict(), indent=4)
+
 @dataclass
 class OptimizerPlan:
     parameter_buckets: ParameterBuckets
     adamw: AdamWPlan | None = None
     muon: MuonPlan | None = None
+
+    def to_dict(self):
+        return {
+            'adamw': self.adamw.to_dict(),
+            'muon': self.muon.to_dict()
+        }
+
+    def __repr__(self):
+        return json.dumps(self.to_dict(), indent=4)
 
 @dataclass
 class Optimizers:

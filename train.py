@@ -54,11 +54,11 @@ from checkpoints import (
     load_model_state,
     load_optimizer_state
 )
-from model_utils import (
-    get_parameters_count,
-    clip_grad_norm,
-    log_workload_summary
-)
+# from model_utils import (
+#     # get_parameters_count,
+#     # clip_grad_norm,
+#     log_workload_summary
+# )
 from hellaswag_utils import (
     load_hellaswag_file,
     estimate_correct_candidate_selection
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     parser.add_argument('--pretrain_checkpoint', type=str, default=None, help='Pretrain checkpoint to load.')
     parser.add_argument('--instruct_checkpoint', type=str, default=None, help='Instruct checkpoint to load.')
     parser.add_argument('--dpo_checkpoint', type=str, default=None, help='DPO checkpoint to load.')
-    parser.add_argument('--reset-optimizer', action='store_true', help='Reset the optimizer state when loading a checkpoint.')
+    parser.add_argument('--reset-optimizers', action='store_true', help='Reset the optimizers state when loading a checkpoint.')
     parser.add_argument('--start-step', type=int, default=None, help='Starting step number for training.')
 
     args = parser.parse_args()
@@ -88,7 +88,6 @@ if __name__ == "__main__":
         config = config,
         args=args
     )
-    trainer.setup()
     trainer.train()
 
     # ### CONFIGURATION
@@ -167,16 +166,10 @@ if __name__ == "__main__":
     # #### PREPARE DDP / FSDP
     # #### PREPARE OPTIMIZER OPTIMAL PARAM GROUPS
     # #### INIT OPTIMIZER
-
-
-
-
-
-
-
     # #### TRAINING LOOP
-    # total_tokens = train_loader.calculate_max_tokens()
-    # complete_max_steps = math.ceil(total_tokens / total_batch_size)
+    # COMPUTE TOKENS
+    # COMPUTE MAX STEPS
+    # DEVICE READY CHECK
 
     # # Workload summary
     # if is_master_process:
@@ -196,18 +189,7 @@ if __name__ == "__main__":
     #     ))
 
 
-
-    # if ddp:
-    #     dist.barrier()
-
-    # logger.info(f'\nDevice: {ddp_local_rank} is ready.', True)
-
     # tqdm_label = f'Training ({training_stage.value})'
-
-    # # max_steps not set
-    # if max_steps == -1:
-    #     max_steps = complete_max_steps
-
     # epochs_no_improve = 0
     # abort_if_no_improve = torch.tensor([0], device=device)
     # early_stopping_patience_skip_steps += start_step
@@ -526,3 +508,31 @@ if __name__ == "__main__":
     # if ddp:
     #     dist.barrier()
     #     destroy_process_group()
+
+
+
+
+
+# import torch
+# from torch.distributed.tensor import DTensor
+
+# def clip_grad_norm(model, max_norm):
+#     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+#     if isinstance(norm, DTensor):
+#         return norm.to_local()
+#     return norm
+
+
+    # logger.info(f'min learning rate: {c.min_lr}')
+    # logger.info('Optimizers:')
+    # if c.optimizers.adamw:
+    #     logger.info(f'  AdamW:')
+    #     adamw = c.optimizers.adamw
+    #     logger.info(f'    using fused AdamW: {adamw.defaults["fused"]}')
+    #     logger.info(f'    LR set in the optimizer: {adamw.param_groups[0]["lr"]:.4e}')
+    #     logger.info(f'    betas for AdamW: {c.adamw_betas}')
+    #     scheduled_lr = cosine_scheduler(c.start_step, c.min_lr, c.adamw_max_lr, c.warmup_steps, c.max_steps)
+    #     logger.info(f'    (scheduler) LR that will be applied for step {c.start_step}: {scheduled_lr:.4e}')
+    #     logger.info(f'    max learning rate: {c.adamw_max_lr}')
+    #     logger.info(f'    weight decay: {c.adamw_weight_decay}')
+    #     logger.info('   --')

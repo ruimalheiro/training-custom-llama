@@ -33,6 +33,7 @@ class PretrainDataLoader:
         assert split in {'train', 'val'}
         self.split = split
         self.use_shuffle = use_shuffle
+        self.total_tokens = None
 
         split_root = os.path.join(data_root, split)
         assert os.path.isdir(split_root), f'missing split dir: {split_root}'
@@ -57,6 +58,9 @@ class PretrainDataLoader:
         self.reset()
 
     def calculate_max_tokens(self):
+        if self.total_tokens:
+            return self.total_tokens
+
         def _calculate():
             total = 0
             for path in self.shards:
@@ -74,6 +78,7 @@ class PretrainDataLoader:
             object_list_to_sync[0] = _calculate()
         dist.broadcast_object_list(object_list_to_sync, src=0)
         total_tokens = int(object_list_to_sync[0])
+        self.total_tokens = total_tokens
         return total_tokens
 
     def sync_shuffle_shards(self):
@@ -141,6 +146,7 @@ class InstructDataLoader:
         self.is_master_process = is_master_process
         self.process_rank = process_rank
         self.num_processes = num_processes
+        self.total_tokens = None
 
         dataset = datasets.load_from_disk(os.path.join(data_root, split))
         if is_master_process:
@@ -206,6 +212,9 @@ class InstructDataLoader:
         return len(self._dataloader.dataset)
 
     def calculate_max_tokens(self):
+        if self.total_tokens:
+            return self.total_tokens
+
         def _calculate():
             return sum(self._dataloader.dataset.map(
                 lambda ex: {'len': len(ex['input_ids'])},
@@ -223,6 +232,7 @@ class InstructDataLoader:
             object_list_to_sync[0] = _calculate()
         dist.broadcast_object_list(object_list_to_sync, src=0)
         total_tokens = int(object_list_to_sync[0])
+        self.total_tokens = total_tokens
         return total_tokens
 
     def state_dict(self):
@@ -245,6 +255,7 @@ class DirectPreferenceOptimizationDataLoader:
         self.is_master_process = is_master_process
         self.process_rank = process_rank
         self.num_processes = num_processes
+        self.total_tokens = None
 
         dataset = datasets.load_from_disk(os.path.join(data_root, split))
         if is_master_process:
@@ -321,6 +332,9 @@ class DirectPreferenceOptimizationDataLoader:
         return len(self._dataloader.dataset)
 
     def calculate_max_tokens(self):
+        if self.total_tokens:
+            return self.total_tokens
+
         def _calculate():
             return sum(self._dataloader.dataset.map(
                 lambda ex: {'len': len(ex['prompt_input_ids']) + len(ex['chosen_input_ids']) + len(ex['rejected_input_ids'])},
@@ -338,6 +352,7 @@ class DirectPreferenceOptimizationDataLoader:
             object_list_to_sync[0] = _calculate()
         dist.broadcast_object_list(object_list_to_sync, src=0)
         total_tokens = int(object_list_to_sync[0])
+        self.total_tokens = total_tokens
         return total_tokens
 
     def state_dict(self):

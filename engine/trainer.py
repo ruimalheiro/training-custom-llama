@@ -49,6 +49,9 @@ from engine.optim import (
     build_optimizers,
     move_optimizer_state_to_param_device
 )
+from engine.logging import (
+    prepare_workload_summary
+)
 
 
 class Trainer:
@@ -72,6 +75,9 @@ class Trainer:
         self.task = None
         self.task_assets = None
         self.optimizer_plan = None
+        self.optimizers = None
+        self.schedulers = None
+        self.workload_summary = None
 
         self.validate_config()
 
@@ -106,6 +112,9 @@ class Trainer:
         self.resolve_optimizers_checkpoint()
         self.build_schedulers()
         self.prepare_runtime()
+        self.prepare_workload_summary_json()
+        self.log_workload_summary()
+        self.check_all_devices_ready()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -322,10 +331,13 @@ class Trainer:
             is_master_process=self.distributed_ctx.is_master_process
         )
 
-        if not args.reset_optimizers:
+        training_stage_changed = (checkpoint_data.metadata.get('training_stage', None) != self.config.training_stage.value)
+
+        if not args.reset_optimizers and not training_stage_changed:
+            self.trainer_state.last_val_loss = checkpoint_data.last_val_loss
             self.trainer_state.best_val_loss = checkpoint_data.best_val_loss
 
-        if checkpoint_data.metadata.get('training_stage', None) != self.config.training_stage.value:
+        if training_stage_changed:
             logger.info('** WARNING: Training stage has changed **')
             if checkpoint_data.start_step and not args.start_step:
                 logger.info('ignoring stored start step...')
@@ -424,30 +436,85 @@ class Trainer:
         self.optimizers = build_optimizers(self.config, self.optimizer_plan)
 
     def resolve_optimizers_checkpoint(self):
-        if not self.checkpoint_data:
+        if not self.checkpoint_data or not self.checkpoint_data.optimizers_state:
             return
-        if self.optimizers.adamw and self.checkpoint_data.optimizers_state is not None:
-            if self.checkpoint_data.optimizers_state['adamw']:
-                load_optimizer_state(self.optimizers.adamw, self.model, self.checkpoint_data.optimizers_state['adamw'])
-                move_optimizer_state_to_param_device(self.optimizers.adamw)
-                logger.info('AdamW optimizer state loaded and ready')
-            if self.checkpoint_data.optimizers_state['muon']:
-                load_optimizer_state(self.optimizers.muon, self.model, self.checkpoint_data.optimizers_state['muon'])
-                move_optimizer_state_to_param_device(self.optimizers.muon)
-                logger.info('Muon optimizer state loaded and ready')
+        if self.optimizers.adamw and self.checkpoint_data.optimizers_state['adamw']:
+            load_optimizer_state(self.optimizers.adamw, get_model(self.model), self.checkpoint_data.optimizers_state['adamw'])
+            move_optimizer_state_to_param_device(self.optimizers.adamw)
+            logger.info('AdamW optimizer state loaded and ready')
+        if self.optimizers.muon and self.checkpoint_data.optimizers_state['muon']:
+            load_optimizer_state(self.optimizers.muon, get_model(self.model), self.checkpoint_data.optimizers_state['muon'])
+            move_optimizer_state_to_param_device(self.optimizers.muon)
+            logger.info('Muon optimizer state loaded and ready')
 
     def build_schedulers(self):
         pass
 
     def prepare_runtime(self):
+        self.trainer_state.max_steps = self.config.max_steps
         if self.trainer_state.max_steps <= 0:
-            total_tokens = self.train_loader.calculate_max_tokens()
-            self.trainer_state.max_steps = math.ceil(total_tokens / self.config.total_batch_size)
+            self.trainer_state.max_steps = math.ceil(self.train_loader.calculate_max_tokens() / self.config.total_batch_size)
+        if self.checkpoint_data:
+            self.trainer_state.global_step = self.checkpoint_data.start_step
 
-    def train(self):
-        self.cleanup()
+    def prepare_workload_summary_json(self):
+        if self.distributed_ctx.is_master_process:
+            self.workload_summary = prepare_workload_summary(
+                config=self.config,
+                model_config=self.model_config,
+                checkpoint_data=self.checkpoint_data,
+                trainer_ctx=self.trainer_ctx,
+                optimizer_plan=self.optimizer_plan,
+                trainer_state=self.trainer_state,
+                model_params_count=get_model(self.model).get_total_parameters_count(),
+                model_trainable_params_count=get_model(self.model).get_trainable_parameters_count(),
+                total_tokens=self.train_loader.calculate_max_tokens()
+            )
+
+    def log_workload_summary(self):
+        if self.distributed_ctx.is_master_process:
+            logger.info(f'\n{self.config.training_stage.upper()} WORKLOAD SUMMARY:')
+            logger.info('--------------------------------------------------------')
+            logger.info(self.workload_summary, is_json=True)
+            logger.info('--------------------------------------------------------')
+
+    def check_all_devices_ready(self):
+        if self.distributed_ctx.ddp and dist.is_initialized():
+            dist.barrier()
+        logger.info(f'\nDevice: {self.distributed_ctx.ddp_local_rank} is ready.', True)
+
+    def trigger_save_checkpoint(self, pbar=None):
+        save_checkpoint(
+            self.config.save_checkpoints_path,
+            get_model(self.model),
+            self.model_config,
+            self.config,
+            self.trainer_state.global_step,
+            self.trainer_state.last_val_loss,
+            self.trainer_state.best_val_loss,
+            self.optimizers,
+            self.train_loader,
+            self.val_loader,
+            {
+                'training_stage': self.config.training_stage.value,
+                'lora_enabled': self.config.lora_enabled
+            },
+            self.config.max_number_checkpoints,
+            self.distributed_ctx.is_master_process,
+            pbar
+        )
+
+    def start_training_loop(self):
+        self.trigger_save_checkpoint() # DUMMY CALL FOR DEBUGGING. WILL ME REMOVED.
 
     def cleanup(self):
-        if self.distributed_ctx.ddp:
+        if self.distributed_ctx and self.distributed_ctx.ddp and dist.is_initialized():
             dist.barrier()
             destroy_process_group()
+
+    def train(self):
+        try:
+            self.setup()
+            self.start_training_loop()
+        finally:
+            self.cleanup()

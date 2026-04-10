@@ -32,9 +32,6 @@ class ModelConfig:
     moe_z_loss_coef: float = None
     moe_compute_stats: bool = False
 
-    def __repr__(self):
-        return json.dumps(self.to_dict(), indent=4)
-
     def to_dict(self):
         return {
             'dim': self.dim,
@@ -58,6 +55,9 @@ class ModelConfig:
             'moe_z_loss_coef': self.moe_z_loss_coef,
             'moe_compute_stats': self.moe_compute_stats
         }
+
+    def __repr__(self):
+        return json.dumps(self.to_dict(), indent=4)
 
 def precompute_rope_freqs(head_dim, sequence_length, theta=10000.0, device='cpu', dtype=torch.float32):
     ''' Computes the frequencies that will be used for rope (rotary positional ebedding). Without complex numbers.

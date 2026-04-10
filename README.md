@@ -58,7 +58,6 @@ The model implementation was originally based on the Llama 3 architecture but la
 - `logger.py` Simple reusable logger.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
-- `model_utils.py` Contains utils like model parameter count, clip grad and logging the task summary.
   - Torch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
   - Weights & Biases [here](https://wandb.ai/site/)
 - `model.py` Implements the custom Llama architecture.
