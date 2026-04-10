@@ -390,9 +390,3 @@ if __name__ == '__main__':
 
     #         if torch_profiler_enabled:
     #             prof.step()
-
-    # wandb.finish()
-
-    # if ddp:
-    #     dist.barrier()
-    #     destroy_process_group()

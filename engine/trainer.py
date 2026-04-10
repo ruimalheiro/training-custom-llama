@@ -81,6 +81,8 @@ class Trainer:
         self.optimizers = None
         self.schedulers = None
         self.workload_summary = None
+        self.wandb = None
+        self.torch_profiler = None
 
         self.validate_config()
 
@@ -119,6 +121,7 @@ class Trainer:
         self.log_workload_summary()
         self.check_all_devices_ready()
         self.setup_wandb()
+        self.setup_torch_profiler()
 
     def setup_global_torch_optimizations(self):
         torch.backends.cuda.matmul.fp32_precision = 'tf32'
@@ -493,6 +496,9 @@ class Trainer:
             config=self.workload_summary
         )
 
+    def setup_torch_profiler(self):
+        pass
+
     def check_all_devices_ready(self):
         if self.distributed_ctx.ddp and dist.is_initialized():
             dist.barrier()
@@ -539,6 +545,9 @@ class Trainer:
         self.trigger_save_checkpoint() # DUMMY CALL FOR DEBUGGING. WILL ME REMOVED.
 
     def cleanup(self):
+        if self.wandb:
+            self.wandb.finish()
+
         if self.distributed_ctx and self.distributed_ctx.ddp and dist.is_initialized():
             dist.barrier()
             destroy_process_group()
