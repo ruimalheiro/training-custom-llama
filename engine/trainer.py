@@ -16,6 +16,18 @@ from engine.context import (
     TrainerContext
 )
 from engine.core import TrainerState
+from engine.optim import (
+    classify_trainable_parameters,
+    build_optimizer_plan,
+    build_optimizers,
+    move_optimizer_state_to_param_device
+)
+from engine.logging import (
+    prepare_workload_summary
+)
+from engine.torch_profiler import (
+    init_torch_profiler_context
+)
 from ddp_utils import (
     init_multi_gpu,
     prepare_model_for_ddp,
@@ -45,15 +57,6 @@ from lora import (
     freeze_non_lora_parameters
 )
 from tasks import get_task
-from engine.optim import (
-    classify_trainable_parameters,
-    build_optimizer_plan,
-    build_optimizers,
-    move_optimizer_state_to_param_device
-)
-from engine.logging import (
-    prepare_workload_summary
-)
 from wandb_utils import WandbWrapper
 
 
@@ -497,7 +500,10 @@ class Trainer:
         )
 
     def setup_torch_profiler(self):
-        pass
+        self.torch_profiler_context = init_torch_profiler_context(
+            self.config,
+            self.distributed_ctx
+        )
 
     def check_all_devices_ready(self):
         if self.distributed_ctx.ddp and dist.is_initialized():
@@ -542,7 +548,9 @@ class Trainer:
         abort_if_no_improve = torch.tensor([0], device=device)
         early_stopping_patience_skip_steps = self.config.early_stopping_patience_skip_steps + self.trainer_state.start_step
 
-        self.trigger_save_checkpoint() # DUMMY CALL FOR DEBUGGING. WILL ME REMOVED.
+        with self.torch_profiler_context as torch_profiler_ctx:
+            self.trigger_save_checkpoint() # DUMMY CALL FOR DEBUGGING. WILL ME REMOVED.
+            torch_profiler_ctx.step()
 
     def cleanup(self):
         if self.wandb:
