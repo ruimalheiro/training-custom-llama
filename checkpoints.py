@@ -119,7 +119,7 @@ class CheckpointData:
     checkpoint_name: str | None = None
     model_state: dict[str, Any] | None = None
     optimizers_state: dict[str, Any] | None = None
-    start_step: int = 0
+    resume_step: int = 0
     last_val_loss: float = float('inf')
     best_val_loss: float = float('inf')
     train_loader_state: Any = None
@@ -131,7 +131,7 @@ class CheckpointData:
         return {
             'path': self.path,
             'checkpoint_name': self.checkpoint_name,
-            'start_step': self.start_step,
+            'resume_step': self.resume_step,
             'last_val_loss': self.last_val_loss if not math.isinf(self.last_val_loss) else None,
             'best_val_loss': self.best_val_loss if not math.isinf(self.best_val_loss) else None,
             'is_lora_checkpoint': self.is_lora_checkpoint,
@@ -145,7 +145,6 @@ def load_checkpoint(
     checkpoint_dir,
     checkpoint,
     reset_optimizers=False,
-    force_start_step=None,
     is_master_process=True
 ):
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint)
@@ -165,9 +164,6 @@ def load_checkpoint(
             assert type(optimizers_state['adamw']) == dict
         if optimizers_state['muon']:
             assert type(optimizers_state['muon']) == dict
-
-    if force_start_step is not None:
-        step = force_start_step
 
     train_dl_state = state.get('train_dl', None)
     val_dl_state = state.get('val_dl',   None)
@@ -227,7 +223,7 @@ def load_checkpoint(
         checkpoint_name=checkpoint,
         model_state=model_state,
         optimizers_state=optimizers_state,
-        start_step=step,
+        resume_step=step,
         last_val_loss=last_val_loss,
         best_val_loss=best_val_loss,
         train_loader_state=train_dl_state,

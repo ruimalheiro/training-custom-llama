@@ -85,7 +85,7 @@ class Trainer:
         self.schedulers = None
         self.workload_summary = None
         self.wandb = None
-        self.torch_profiler = None
+        self.torch_profiler_context = None
 
         self.validate_config()
 
@@ -337,21 +337,18 @@ class Trainer:
             path,
             name,
             reset_optimizers=args.reset_optimizers,
-            force_start_step=args.start_step,
             is_master_process=self.distributed_ctx.is_master_process
         )
 
-        training_stage_changed = (checkpoint_data.metadata.get('training_stage', None) != self.config.training_stage.value)
-
-        if not args.reset_optimizers and not training_stage_changed:
-            self.trainer_state.last_val_loss = checkpoint_data.last_val_loss
-            self.trainer_state.best_val_loss = checkpoint_data.best_val_loss
+        training_stage_changed = (
+            checkpoint_data.metadata.get('training_stage', None) != self.config.training_stage.value
+        )
 
         if training_stage_changed:
             logger.info('** WARNING: Training stage has changed **')
-            if checkpoint_data.start_step and not args.start_step:
-                logger.info('ignoring stored start step...')
-                checkpoint_data.start_step=0
+            if checkpoint_data.resume_step:
+                logger.info('ignoring stored resume step...')
+                checkpoint_data.resume_step=0
             if checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
                 logger.info('ignoring stored metadata for dataset...')
                 checkpoint_data.train_loader_state = None
@@ -465,7 +462,14 @@ class Trainer:
         if self.trainer_state.max_steps <= 0:
             self.trainer_state.max_steps = math.ceil(self.train_loader.calculate_max_tokens() / self.config.total_batch_size)
         if self.checkpoint_data:
-            self.trainer_state.global_step = self.checkpoint_data.start_step
+            self.trainer_state.start_step = self.checkpoint_data.resume_step if not self.args.start_step else self.args.start_step
+            self.trainer_state.current_step = self.checkpoint_data.resume_step if not self.args.start_step else self.args.start_step
+            if not self.args.reset_optimizers:
+                self.trainer_state.last_val_loss = self.checkpoint_data.last_val_loss
+                self.trainer_state.best_val_loss = self.checkpoint_data.best_val_loss
+        else:
+            self.trainer_state.start_step = self.args.start_step
+            self.trainer_state.current_step = self.args.start_step
 
     def prepare_workload_summary_json(self):
         if self.distributed_ctx.is_master_process:
@@ -483,7 +487,7 @@ class Trainer:
 
     def log_workload_summary(self):
         if self.distributed_ctx.is_master_process:
-            logger.info(f'\n{self.config.training_stage.upper()} WORKLOAD SUMMARY:')
+            logger.info(f'\n{self.config.training_stage.value.upper()} WORKLOAD SUMMARY:')
             logger.info('--------------------------------------------------------')
             logger.info(self.workload_summary, is_json=True)
             logger.info('--------------------------------------------------------')
@@ -516,7 +520,7 @@ class Trainer:
             get_model(self.model),
             self.model_config,
             self.config,
-            self.trainer_state.global_step,
+            self.trainer_state.current_step,
             self.trainer_state.last_val_loss,
             self.trainer_state.best_val_loss,
             self.optimizers,
