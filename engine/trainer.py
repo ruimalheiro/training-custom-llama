@@ -3,7 +3,10 @@ import math
 import torch
 import torch.distributed as dist
 
-from torch.distributed import destroy_process_group
+from torch.distributed import (
+    destroy_process_group,
+    broadcast
+)
 from torch.distributed.tensor import DTensor
 from torch.distributed.fsdp import MixedPrecisionPolicy
 from torch.nn.utils import clip_grad_norm_
@@ -58,6 +61,8 @@ from lora import (
 )
 from tasks import get_task
 from wandb_utils import WandbWrapper
+from lr_schedulers import cosine_scheduler
+from tqdm.auto import tqdm
 
 
 class Trainer:
@@ -82,7 +87,6 @@ class Trainer:
         self.task_assets = None
         self.optimizer_plan = None
         self.optimizers = None
-        self.schedulers = None
         self.workload_summary = None
         self.wandb = None
         self.torch_profiler_context = None
@@ -118,7 +122,6 @@ class Trainer:
         self.build_optimizer_plan()
         self.build_optimizers()
         self.resolve_optimizers_checkpoint()
-        self.build_schedulers()
         self.prepare_runtime()
         self.prepare_workload_summary_json()
         self.log_workload_summary()
@@ -454,22 +457,19 @@ class Trainer:
             move_optimizer_state_to_param_device(self.optimizers.muon)
             logger.info('Muon optimizer state loaded and ready')
 
-    def build_schedulers(self):
-        pass
-
     def prepare_runtime(self):
         self.trainer_state.max_steps = self.config.max_steps
         if self.trainer_state.max_steps <= 0:
             self.trainer_state.max_steps = math.ceil(self.train_loader.calculate_max_tokens() / self.config.total_batch_size)
         if self.checkpoint_data:
-            self.trainer_state.start_step = self.checkpoint_data.resume_step if not self.args.start_step else self.args.start_step
-            self.trainer_state.current_step = self.checkpoint_data.resume_step if not self.args.start_step else self.args.start_step
+            self.trainer_state.start_step = self.checkpoint_data.resume_step if self.args.start_step is None else self.args.start_step
+            self.trainer_state.current_step = self.checkpoint_data.resume_step if self.args.start_step is None else self.args.start_step
             if not self.args.reset_optimizers:
                 self.trainer_state.last_val_loss = self.checkpoint_data.last_val_loss
                 self.trainer_state.best_val_loss = self.checkpoint_data.best_val_loss
         else:
-            self.trainer_state.start_step = self.args.start_step
-            self.trainer_state.current_step = self.args.start_step
+            self.trainer_state.start_step = 0 if self.args.start_step is None else self.args.start_step
+            self.trainer_state.current_step = 0 if self.args.start_step is None else self.args.start_step
 
     def prepare_workload_summary_json(self):
         if self.distributed_ctx.is_master_process:
@@ -514,7 +514,29 @@ class Trainer:
             dist.barrier()
         logger.info(f'\nDevice: {self.distributed_ctx.ddp_local_rank} is ready.', True)
 
-    def trigger_save_checkpoint(self, pbar=None):
+    def should_run(self, step, every, last_step, run_last_step=True):
+        if every == -1:
+            return run_last_step and last_step
+        return (step > 0 and step % every == 0) or (run_last_step and last_step)
+
+    def clip_grad_norm(self, model, max_norm):
+        norm = clip_grad_norm_(model.parameters(), max_norm)
+        if isinstance(norm, DTensor):
+            return norm.to_local()
+        return norm
+
+    def run_train(self):
+        pass
+
+    def run_validation(self):
+        pass
+
+    def run_save_checkpoint(self, pbar=None):
+        if (
+            not self.config.save_checkpoints or
+            self.config.save_best_only and self.trainer_state.num_val_runs_no_improve > 0
+        ):
+            return
         save_checkpoint(
             self.config.save_checkpoints_path,
             get_model(self.model),
@@ -535,26 +557,58 @@ class Trainer:
             pbar
         )
 
-    def should_run(self, step, every, last_step, run_last_step=True):
-        if every == -1:
-            return run_last_step and last_step
-        return (step > 0 and step % every == 0) or (run_last_step and last_step)
+    def run_hellaswag_eval(self):
+        pass
 
-    def clip_grad_norm(self, model, max_norm):
-        norm = clip_grad_norm_(model.parameters(), max_norm)
-        if isinstance(norm, DTensor):
-            return norm.to_local()
-        return norm
+    def run_generation(self):
+        pass
+
+    def process_step(self, pbar):
+        step = self.trainer_state.current_step
+        is_last_step = self.trainer_state.is_last_step
+
+        self.run_train()
+        if self.should_run(step, self.config.validate_every_x_steps, is_last_step):
+            self.run_validation()
+        if self.should_run(step, self.config.save_every_x_steps, is_last_step):
+            self.run_save_checkpoint(pbar)
+        if self.should_run(step, self.config.hellaswag_every_x_steps, is_last_step):
+            self.run_hellaswag_eval()
+        if self.should_run(step, self.config.generate_every_x_steps, is_last_step):
+            self.run_generation()
 
     def start_training_loop(self):
+        is_master_process = self.trainer_ctx.distributed.is_master_process
+        ddp_rank = self.trainer_ctx.distributed.ddp_rank
         device = self.trainer_ctx.device.device
+        start_step = self.trainer_state.start_step
+        current_step = self.trainer_state.current_step
+        max_steps = self.trainer_state.max_steps
+
         tqdm_label = f'Training ({self.config.training_stage.value})'
-        abort_if_no_improve = torch.tensor([0], device=device)
+        abort_signal = torch.tensor([0], device=device)
         early_stopping_patience_skip_steps = self.config.early_stopping_patience_skip_steps + self.trainer_state.start_step
 
         with self.torch_profiler_context as torch_profiler_ctx:
-            self.trigger_save_checkpoint() # DUMMY CALL FOR DEBUGGING. WILL ME REMOVED.
-            torch_profiler_ctx.step()
+            pbar = tqdm(
+                range(start_step, max_steps),
+                initial=current_step,
+                total=max_steps,
+                desc=tqdm_label,
+                disable=not is_master_process,
+                dynamic_ncols=True
+            )
+            for step in pbar:
+                if abort_signal.item() == 1:
+                    logger.info(f'Rank {ddp_rank} received stop signal.', True)
+                    break
+                self.trainer_state.current_step = step
+                self.trainer_state.is_last_step = (step == max_steps - 1)
+                self.process_step(pbar)
+                torch_profiler_ctx.step()
+                abort_signal[0] = 1 if self.trainer_state.should_stop else 0
+                if self.distributed_ctx.ddp:
+                    broadcast(abort_signal, src=0)
 
     def cleanup(self):
         if self.wandb:

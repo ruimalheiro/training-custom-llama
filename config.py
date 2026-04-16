@@ -69,6 +69,8 @@ class TrainConfig(BaseSettings):
     dpo_load_checkpoints_path: str = Field(alias='DPO_LOAD_CHECKPOINTS_PATH')
 
     save_checkpoints: bool = Field(default=False, alias='SAVE_CHECKPOINTS')
+    save_best_only: bool = Field(default=False, alias='SAVE_BEST_ONLY')
+    save_every_x_steps: int = Field(alias='SAVE_EVERY_X_STEPS')
     max_number_checkpoints: int = Field(default=2, alias='MAX_NUMBER_CHECKPOINTS')
 
     # wandb
@@ -90,18 +92,20 @@ class TrainConfig(BaseSettings):
     training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')
     max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
-    warmup_steps: int = Field(alias='WARMUP_STEPS')
-    min_lr: float = Field(alias='MIN_LR')
 
+    adamw_min_lr: float = Field(alias='ADAMW_MIN_LR')
     adamw_max_lr: float = Field(alias='ADAMW_MAX_LR')
     adamw_weight_decay: float = Field(alias='ADAMW_WEIGHT_DECAY')
     adamw_betas: Tuple[float, float] = Field(default=(0.9, 0.95), alias='ADAMW_BETAS')
     adamw_use_fused: Annotated[bool | None, Field(alias='ADAMW_USE_FUSED')] = None
+    adamw_warmup_steps: int = Field(alias='ADAMW_WARMUP_STEPS')
 
     use_muon: bool = Field(default=False, alias='USE_MUON')
+    muon_min_lr: float = Field(alias='MUON_MIN_LR')
     muon_max_lr: float = Field(alias='MUON_MAX_LR')
     muon_weight_decay: float = Field(alias='MUON_WEIGHT_DECAY')
     muon_momentum: float = Field(alias='MUON_MOMENTUM', default=0.95)
+    muon_warmup_steps: int = Field(alias='MUON_WARMUP_STEPS')
 
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
@@ -225,6 +229,8 @@ class TrainConfig(BaseSettings):
                 'dpo_save_checkpoints_path': data['dpo_save_checkpoints_path'],
                 'dpo_load_checkpoints_path': data['dpo_load_checkpoints_path'],
                 'save_checkpoints': data['save_checkpoints'],
+                'save_best_only': data['save_best_only'],
+                'save_every_x_steps': data['save_every_x_steps'],
                 'max_number_checkpoints': data['max_number_checkpoints']
             },
             'wandb': {
@@ -257,16 +263,20 @@ class TrainConfig(BaseSettings):
             },
             'optimizers_config': {
                 'adamw': {
+                    'adamw_min_lr': data['adamw_min_lr'],
                     'adamw_max_lr': data['adamw_max_lr'],
                     'adamw_weight_decay': data['adamw_weight_decay'],
                     'adamw_betas': data['adamw_betas'],
-                    'adamw_use_fused': data['adamw_use_fused']
+                    'adamw_use_fused': data['adamw_use_fused'],
+                    'adamw_warmup_steps': data['adamw_warmup_steps']
                 },
                 'muon': {
                     'use_muon': data['use_muon'],
+                    'muon_min_lr': data['muon_min_lr'],
                     'muon_max_lr': data['muon_max_lr'],
                     'muon_weight_decay': data['muon_weight_decay'],
-                    'muon_momentum': data['muon_momentum']
+                    'muon_momentum': data['muon_momentum'],
+                    'muon_warmup_steps': data['muon_warmup_steps']
                 }
             },
             'training_config': {
@@ -276,8 +286,6 @@ class TrainConfig(BaseSettings):
                 'training_precision': data['training_precision'].value,
                 'total_batch_size': data['total_batch_size'],
                 'max_steps': data['max_steps'],
-                'warmup_steps': data['warmup_steps'],
-                'min_lr': data['min_lr'],
                 'early_stopping_patience': data['early_stopping_patience'],
                 'early_stopping_patience_skip_steps': data['early_stopping_patience_skip_steps']
             },

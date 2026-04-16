@@ -8,5 +8,6 @@ class TrainerState:
     max_steps: int = 0
     best_val_loss: float = float('inf')
     last_val_loss: float = float('inf')
-    num_evals_no_improve: int = 0
+    num_val_runs_no_improve: int = 0
     should_stop: bool = False
+    is_last_step: bool = False
