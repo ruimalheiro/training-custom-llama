@@ -257,7 +257,8 @@ def build_optimizers(config, optimizer_plan: OptimizerPlan) -> Optimizers:
                 'params': group.params,
                 'param_names': group.param_names,
                 'weight_decay': group.weight_decay,
-                'lr': optimizer_plan.adamw.lr * group.lr_scale
+                'lr': optimizer_plan.adamw.lr * group.lr_scale,
+                'lr_scale': group.lr_scale
             })
 
         optimizers.adamw = AdamW(
@@ -275,7 +276,8 @@ def build_optimizers(config, optimizer_plan: OptimizerPlan) -> Optimizers:
                 'params': group.params,
                 'param_names': group.param_names,
                 'weight_decay': group.weight_decay,
-                'lr': optimizer_plan.muon.lr * group.lr_scale
+                'lr': optimizer_plan.muon.lr * group.lr_scale,
+                'lr_scale': group.lr_scale
             })
 
         optimizers.muon = Muon(

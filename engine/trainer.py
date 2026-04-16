@@ -18,7 +18,10 @@ from engine.context import (
     PrecisionContext,
     TrainerContext
 )
-from engine.core import TrainerState
+from engine.core import (
+    TrainerState,
+    MemoryUsageMetrics
+)
 from engine.optim import (
     classify_trainable_parameters,
     build_optimizer_plan,
@@ -63,6 +66,11 @@ from tasks import get_task
 from wandb_utils import WandbWrapper
 from lr_schedulers import cosine_scheduler
 from tqdm.auto import tqdm
+from metrics import (
+    collect_moe_metrics,
+    accumulate_weighted_metrics,
+    combine_weighted_metrics
+)
 
 
 class Trainer:
@@ -347,17 +355,25 @@ class Trainer:
             checkpoint_data.metadata.get('training_stage', None) != self.config.training_stage.value
         )
 
+        ddp_world_size_changed = (
+            checkpoint_data.metadata.get('ddp_world_size', None) != self.distributed_ctx.ddp_world_size
+        )
+        if ddp_world_size_changed and checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
+            logger.warn('ignoring stored metadata for dataloaders due to change in ddp world size...')
+            checkpoint_data.train_loader_state = None
+            checkpoint_data.val_loader_state = None
+
         if training_stage_changed:
-            logger.info('** WARNING: Training stage has changed **')
+            logger.warn('Training stage has changed')
             if checkpoint_data.resume_step:
-                logger.info('ignoring stored resume step...')
+                logger.warn('ignoring stored resume step...')
                 checkpoint_data.resume_step=0
             if checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
-                logger.info('ignoring stored metadata for dataset...')
+                logger.warn('ignoring stored metadata for dataloaders...')
                 checkpoint_data.train_loader_state = None
                 checkpoint_data.val_loader_state = None
             if checkpoint_data.optimizers_state is not None:
-                logger.info('ignoring stored state of optimizer(s)...')
+                logger.warn('ignoring stored state of optimizer(s)...')
                 checkpoint_data.optimizers_state = None
             logger.info('\n')
         
@@ -525,8 +541,199 @@ class Trainer:
             return norm.to_local()
         return norm
 
-    def run_train(self):
-        pass
+    def reset_memory_usage_metrics(self):
+        if not torch.cuda.is_available():
+            return
+        torch.cuda.reset_peak_memory_stats()
+
+    def compute_memory_usage_metrics(self):
+        ddp_local_rank = self.trainer_ctx.distributed.ddp_local_rank
+        return MemoryUsageMetrics(
+            peak_allocated_mb=torch.cuda.max_memory_allocated(ddp_local_rank) / 1024**2,
+            peak_reserved_mb=torch.cuda.max_memory_reserved(ddp_local_rank) / 1024**2,
+            current_allocated_mb=torch.cuda.memory_allocated(ddp_local_rank) / 1024**2,
+            current_reserved_mb=torch.cuda.memory_reserved(ddp_local_rank) / 1024**2
+        )
+
+    def zero_grad_optimizers(self):
+        if self.optimizers.adamw:
+            self.optimizers.adamw.zero_grad(set_to_none=True)
+        if self.optimizers.muon:
+            self.optimizers.muon.zero_grad(set_to_none=True)
+
+    def unscale_optimizers(self, scaler):
+        # due to fp16, optimizer gradients are inflated so need to unscale before clipping.
+        if self.optimizers.adamw:
+            scaler.unscale_(self.optimizers.adamw)
+        if self.optimizers.muon:
+            scaler.unscale_(self.optimizers.muon)
+
+    def update_optimizers_lr(self):
+        step = self.trainer_state.current_step
+
+        if self.optimizers.adamw:
+            adamw_lr = cosine_scheduler(
+                step=step,
+                warmup_steps=self.config.adamw_warmup_steps,
+                max_steps=self.trainer_state.max_steps,
+                max_lr=self.config.adamw_max_lr,
+                min_lr=self.config.adamw_min_lr,
+            )
+            for group in self.optimizers.adamw.param_groups:
+                lr_scale = group.get('lr_scale', 1.0)
+                group['lr'] = adamw_lr * lr_scale
+        if self.optimizers.muon:
+            muon_lr = cosine_scheduler(
+                step=step,
+                warmup_steps=self.config.muon_warmup_steps,
+                max_steps=self.trainer_state.max_steps,
+                max_lr=self.config.muon_max_lr,
+                min_lr=self.config.muon_min_lr,
+            )
+            for group in self.optimizers.muon.param_groups:
+                lr_scale = group.get('lr_scale', 1.0)
+                group['lr'] = muon_lr * lr_scale
+
+    def optimizers_steps(self, scaler):
+        if scaler:
+            # The dynamic range in fp16 is low and this handles NaNs/infs which might occur more.
+            if self.optimizers.adamw:
+                scaler.step(self.optimizers.adamw)
+            if self.optimizers.muon:
+                scaler.step(self.optimizers.muon)
+            scaler.update()
+        else:
+            if self.optimizers.adamw:
+                self.optimizers.adamw.step()
+            if self.optimizers.muon:
+                self.optimizers.muon.step()
+
+    def log_train_metrics(self, norm, dt, tokens_per_sec, console_logs, aggregated_metrics, memory_usage_metrics, pbar):
+        if not self.trainer_ctx.distributed.is_master_process:
+            return
+
+        step = self.trainer_state.current_step
+        last_val_loss = self.trainer_state.last_val_loss
+        best_val_loss = self.trainer_state.best_val_loss
+        train_loss = aggregated_metrics['Train Loss']
+        peak_allocated_mb = memory_usage_metrics.peak_allocated_mb
+        peak_reserved_mb = memory_usage_metrics.peak_reserved_mb
+        current_allocated_mb = memory_usage_metrics.current_allocated_mb
+        current_reserved_mb = memory_usage_metrics.current_reserved_mb
+
+        adam_lr = self.optimizers.adamw.param_groups[0]['lr']
+        muon_lr = None
+        lr_console_message = f'lr (adamw): {adam_lr:.4e}'
+        if self.optimizers.muon:
+            muon_lr = self.optimizers.muon.param_groups[0]['lr']
+            lr_console_message = f'lr (adamw/muon): {adam_lr:.4e} / {muon_lr:.4e}'
+
+        msg = (
+            f'{step:4d} | '
+            f'train: {train_loss:.4f} | '
+            f'val (last/best): {last_val_loss:.4f} / {best_val_loss:.4f} | '
+            f'{lr_console_message} | '
+            f'norm: {norm:.4f} | '
+            f'dt: {dt:.2f}s | '
+            f'tok/s: {int(tokens_per_sec)} | '
+            f'mem MiB current alloc/res: {current_allocated_mb:.0f} / {current_reserved_mb:.0f} | '
+            f'peak alloc/res: {peak_allocated_mb:.0f} / {peak_reserved_mb:.0f}'
+        )
+        logger.info(msg, pbar=pbar)
+
+        wandb_metrics = dict(aggregated_metrics)
+        wandb_metrics.update({
+            'Learning rate (adamw)': adam_lr,
+            'Learning rate (muon)': muon_lr,
+            'Norm': norm,
+            'Step time (seconds)': dt,
+            'Tokens (per sec)': tokens_per_sec,
+            'Peak Alloc MiB': peak_allocated_mb,
+            'Peak Reserved MiB': peak_reserved_mb,
+            'Alloc MiB': current_allocated_mb,
+            'Reserved MiB': current_reserved_mb
+        })
+
+        for log in console_logs:
+            logger.info(log, pbar=pbar)
+
+        self.wandb.log(wandb_metrics)
+
+    def run_train(self, pbar):
+        ddp = self.trainer_ctx.distributed.ddp
+        use_fsdp = self.trainer_ctx.distributed.use_fsdp
+        device = self.trainer_ctx.device.device
+        scaler = self.trainer_ctx.precision.scaler
+        grad_accum_steps = self.trainer_ctx.grad_accum_steps
+        train_local_token_sum = torch.tensor(0.0, device=device)
+        console_logs = []
+        train_metric_sums = {}
+        train_metric_weights = {}
+
+        self.reset_memory_usage_metrics()
+        self.model.train()
+
+        t0 = torch.Event(enable_timing=True, device=device)
+        t1 = torch.Event(enable_timing=True, device=device)
+        t0.record()
+
+        for micro_step in range(grad_accum_steps):
+            train_output = self.task.train_micro_step(self.model, self.train_loader.next_batch(), self.task_assets)
+            train_local_token_sum += train_output.tokens_processed
+            loss_scaled = train_output.loss_for_backward
+
+            console_logs.extend(train_output.console_logs)
+            accumulate_weighted_metrics(
+                weight=train_output.n_valid,
+                metrics=train_output.metrics,
+                metrics_sum_acc=train_metric_sums,
+                metrics_weights_acc=train_metric_weights,
+                device=device
+            )
+
+            if ddp and not use_fsdp: # require_backward_grad_sync is not used with FSDP
+                self.model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
+
+            if scaler:
+                scaler.scale(loss_scaled).backward()
+            else:
+                loss_scaled.backward()
+
+        train_token_sum = train_local_token_sum
+        if ddp:
+            dist.all_reduce(train_token_sum, op=dist.ReduceOp.SUM)
+        train_token_sum = train_token_sum.item()
+
+        aggregated_metrics = combine_weighted_metrics(
+            metrics_sum_acc=train_metric_sums,
+            metrics_weights_acc=train_metric_weights,
+            ddp=ddp
+        )
+
+        if scaler:
+            self.unscale_optimizers(scaler)
+
+        norm = self.clip_grad_norm(self.model, 1.0)
+
+        self.update_optimizers_lr()
+        self.optimizers_steps(scaler)
+        self.zero_grad_optimizers()
+
+        t1.record()
+        t1.synchronize()
+        dt = t0.elapsed_time(t1) / 1000.0
+        tokens_per_sec = train_token_sum / dt
+
+        memory_usage_metrics = self.compute_memory_usage_metrics()
+        self.log_train_metrics(
+            norm,
+            dt,
+            tokens_per_sec,
+            console_logs,
+            aggregated_metrics,
+            memory_usage_metrics,
+            pbar
+        )
 
     def run_validation(self):
         pass
@@ -550,7 +757,8 @@ class Trainer:
             self.val_loader,
             {
                 'training_stage': self.config.training_stage.value,
-                'lora_enabled': self.config.lora_enabled
+                'lora_enabled': self.config.lora_enabled,
+                'ddp_world_size': self.distributed_ctx.ddp_world_size
             },
             self.config.max_number_checkpoints,
             self.distributed_ctx.is_master_process,
@@ -567,7 +775,7 @@ class Trainer:
         step = self.trainer_state.current_step
         is_last_step = self.trainer_state.is_last_step
 
-        self.run_train()
+        self.run_train(pbar)
         if self.should_run(step, self.config.validate_every_x_steps, is_last_step):
             self.run_validation()
         if self.should_run(step, self.config.save_every_x_steps, is_last_step):

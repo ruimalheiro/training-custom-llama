@@ -11,3 +11,10 @@ class TrainerState:
     num_val_runs_no_improve: int = 0
     should_stop: bool = False
     is_last_step: bool = False
+
+@dataclass(frozen=True)
+class MemoryUsageMetrics:
+    peak_allocated_mb: float
+    peak_reserved_mb: float
+    current_allocated_mb: float
+    current_reserved_mb: float
