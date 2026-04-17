@@ -573,6 +573,8 @@ class Trainer:
     def should_run(self, step, every, last_step, run_last_step=True):
         if every == -1:
             return run_last_step and last_step
+        if every <= 0:
+            return False
         return (step > 0 and step % every == 0) or (run_last_step and last_step)
 
     def clip_grad_norm(self, model, max_norm):
@@ -654,6 +656,7 @@ class Trainer:
 
         reset_memory_usage_metrics()
         self.model.train()
+        self.zero_grad_optimizers()
 
         t0 = torch.Event(enable_timing=True, device=device)
         t1 = torch.Event(enable_timing=True, device=device)
@@ -752,7 +755,7 @@ class Trainer:
         self.model.eval()
         self.prepare_moe_metrics()
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for _ in tqdm(range(self.config.val_steps), 'Validating', disable=not is_master_process, leave=False):
                 output = self.task.validation_step(self.model, self.val_loader.next_batch(), self.task_assets)
                 loss = output.loss
@@ -811,10 +814,14 @@ class Trainer:
     def run_save_checkpoint(self, pbar=None):
         if (
             not self.config.save_checkpoints or
-            self.config.save_best_only and self.trainer_state.num_val_runs_no_improve > 0 or
-            math.isinf(self.trainer_state.best_val_loss)
+            (self.config.save_best_only and self.trainer_state.num_val_runs_no_improve > 0)
         ):
             return
+
+        if math.isinf(self.trainer_state.best_val_loss):
+            # Do not save until we have at least one validation result.
+            return
+
         save_checkpoint(
             self.config.save_checkpoints_path,
             get_model(self.model),
@@ -843,21 +850,22 @@ class Trainer:
         if not self.trainer_ctx.distributed.is_master_process:
             return
         self.model.eval()
-        logger.info(f'{self.trainer_state.current_step:4d} | Generation testing:', pbar=pbar)
-        logger.info('-----------------------------------------------', pbar=pbar)
-        for text in generate_and_decode(
-            model=get_model(self.model),
-            texts=self.test_generation_prompts,
-            max_gen_len=self.config.max_test_gen_len,
-            full_seq=True,
-            device=self.trainer_ctx.device.device,
-            is_instruct=self.config.is_instruct_training,
-            temperature=0.0,
-            top_p=1.0,
-            use_kv_cache=True
-        ):
-            logger.info(text, pbar=pbar)
-        logger.info('-----------------------------------------------', pbar=pbar)
+        with torch.inference_mode():
+            logger.info(f'{self.trainer_state.current_step:4d} | Generation testing:', pbar=pbar)
+            logger.info('-----------------------------------------------', pbar=pbar)
+            for text in generate_and_decode(
+                model=get_model(self.model),
+                texts=self.test_generation_prompts,
+                max_gen_len=self.config.max_test_gen_len,
+                full_seq=True,
+                device=self.trainer_ctx.device.device,
+                is_instruct=self.config.is_instruct_training,
+                temperature=0.0,
+                top_p=1.0,
+                use_kv_cache=True
+            ):
+                logger.info(text, pbar=pbar)
+            logger.info('-----------------------------------------------', pbar=pbar)
 
     def process_step(self, pbar):
         step = self.trainer_state.current_step
