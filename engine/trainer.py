@@ -19,8 +19,7 @@ from engine.context import (
     TrainerContext
 )
 from engine.core import (
-    TrainerState,
-    MemoryUsageMetrics
+    TrainerState
 )
 from engine.optim import (
     classify_trainable_parameters,
@@ -29,7 +28,10 @@ from engine.optim import (
     move_optimizer_state_to_param_device
 )
 from engine.logging import (
-    prepare_workload_summary
+    prepare_workload_summary,
+    prepare_train_step_log,
+    prepare_val_step_log,
+    prepare_val_step_no_improve_log
 )
 from engine.torch_profiler import (
     init_torch_profiler_context
@@ -67,9 +69,13 @@ from wandb_utils import WandbWrapper
 from lr_schedulers import cosine_scheduler
 from tqdm.auto import tqdm
 from metrics import (
+    reset_memory_usage_metrics,
+    compute_memory_usage_metrics,
     collect_moe_metrics,
     accumulate_weighted_metrics,
-    combine_weighted_metrics
+    combine_weighted_metrics,
+    StepType,
+    StepMetrics
 )
 
 
@@ -530,6 +536,40 @@ class Trainer:
             dist.barrier()
         logger.info(f'\nDevice: {self.distributed_ctx.ddp_local_rank} is ready.', True)
 
+    def log_step_metrics(
+        self,
+        *,
+        step_metrics,
+        aggregated_metrics=None,
+        moe_metrics=None,
+        memory_usage_metrics=None,
+        console_logs=None,
+        pbar=None
+    ):
+        if not self.trainer_ctx.distributed.is_master_process:
+            return
+        if step_metrics.step_type == StepType.TRAIN:
+            console_logs, wanb_log = prepare_train_step_log(
+                step_metrics=step_metrics,
+                trainer_state=self.trainer_state,
+                aggregated_metrics=aggregated_metrics,
+                memory_usage_metrics=memory_usage_metrics,
+                console_logs=console_logs
+            )
+        elif step_metrics.step_type == StepType.VAL:
+            console_logs, wanb_log = prepare_val_step_log(
+                step_metrics=step_metrics,
+                trainer_state=self.trainer_state,
+                aggregated_metrics=aggregated_metrics,
+                moe_metrics=moe_metrics,
+                console_logs=console_logs
+            )
+        else:
+            raise ValueError(f'Invalid step type for logging: {step_metrics.step_type.value}')
+        for log in console_logs:
+            logger.info(log, pbar=pbar)
+        self.wandb.log(wanb_log)
+
     def should_run(self, step, every, last_step, run_last_step=True):
         if every == -1:
             return run_last_step and last_step
@@ -540,20 +580,6 @@ class Trainer:
         if isinstance(norm, DTensor):
             return norm.to_local()
         return norm
-
-    def reset_memory_usage_metrics(self):
-        if not torch.cuda.is_available():
-            return
-        torch.cuda.reset_peak_memory_stats()
-
-    def compute_memory_usage_metrics(self):
-        ddp_local_rank = self.trainer_ctx.distributed.ddp_local_rank
-        return MemoryUsageMetrics(
-            peak_allocated_mb=torch.cuda.max_memory_allocated(ddp_local_rank) / 1024**2,
-            peak_reserved_mb=torch.cuda.max_memory_reserved(ddp_local_rank) / 1024**2,
-            current_allocated_mb=torch.cuda.memory_allocated(ddp_local_rank) / 1024**2,
-            current_reserved_mb=torch.cuda.memory_reserved(ddp_local_rank) / 1024**2
-        )
 
     def zero_grad_optimizers(self):
         if self.optimizers.adamw:
@@ -570,7 +596,7 @@ class Trainer:
 
     def update_optimizers_lr(self):
         step = self.trainer_state.current_step
-
+        lrs = {}
         if self.optimizers.adamw:
             adamw_lr = cosine_scheduler(
                 step=step,
@@ -582,6 +608,7 @@ class Trainer:
             for group in self.optimizers.adamw.param_groups:
                 lr_scale = group.get('lr_scale', 1.0)
                 group['lr'] = adamw_lr * lr_scale
+            lrs['adamw_lr'] = adamw_lr
         if self.optimizers.muon:
             muon_lr = cosine_scheduler(
                 step=step,
@@ -593,6 +620,8 @@ class Trainer:
             for group in self.optimizers.muon.param_groups:
                 lr_scale = group.get('lr_scale', 1.0)
                 group['lr'] = muon_lr * lr_scale
+            lrs['muon_lr'] = muon_lr
+        return lrs
 
     def optimizers_steps(self, scaler):
         if scaler:
@@ -608,69 +637,19 @@ class Trainer:
             if self.optimizers.muon:
                 self.optimizers.muon.step()
 
-    def log_train_metrics(self, norm, dt, tokens_per_sec, console_logs, aggregated_metrics, memory_usage_metrics, pbar):
-        if not self.trainer_ctx.distributed.is_master_process:
-            return
-
-        step = self.trainer_state.current_step
-        last_val_loss = self.trainer_state.last_val_loss
-        best_val_loss = self.trainer_state.best_val_loss
-        train_loss = aggregated_metrics['Train Loss']
-        peak_allocated_mb = memory_usage_metrics.peak_allocated_mb
-        peak_reserved_mb = memory_usage_metrics.peak_reserved_mb
-        current_allocated_mb = memory_usage_metrics.current_allocated_mb
-        current_reserved_mb = memory_usage_metrics.current_reserved_mb
-
-        adam_lr = self.optimizers.adamw.param_groups[0]['lr']
-        muon_lr = None
-        lr_console_message = f'lr (adamw): {adam_lr:.4e}'
-        if self.optimizers.muon:
-            muon_lr = self.optimizers.muon.param_groups[0]['lr']
-            lr_console_message = f'lr (adamw/muon): {adam_lr:.4e} / {muon_lr:.4e}'
-
-        msg = (
-            f'{step:4d} | '
-            f'train: {train_loss:.4f} | '
-            f'val (last/best): {last_val_loss:.4f} / {best_val_loss:.4f} | '
-            f'{lr_console_message} | '
-            f'norm: {norm:.4f} | '
-            f'dt: {dt:.2f}s | '
-            f'tok/s: {int(tokens_per_sec)} | '
-            f'mem MiB current alloc/res: {current_allocated_mb:.0f} / {current_reserved_mb:.0f} | '
-            f'peak alloc/res: {peak_allocated_mb:.0f} / {peak_reserved_mb:.0f}'
-        )
-        logger.info(msg, pbar=pbar)
-
-        wandb_metrics = dict(aggregated_metrics)
-        wandb_metrics.update({
-            'Learning rate (adamw)': adam_lr,
-            'Learning rate (muon)': muon_lr,
-            'Norm': norm,
-            'Step time (seconds)': dt,
-            'Tokens (per sec)': tokens_per_sec,
-            'Peak Alloc MiB': peak_allocated_mb,
-            'Peak Reserved MiB': peak_reserved_mb,
-            'Alloc MiB': current_allocated_mb,
-            'Reserved MiB': current_reserved_mb
-        })
-
-        for log in console_logs:
-            logger.info(log, pbar=pbar)
-
-        self.wandb.log(wandb_metrics)
-
     def run_train(self, pbar):
         ddp = self.trainer_ctx.distributed.ddp
+        ddp_local_rank = self.trainer_ctx.distributed.ddp_local_rank
         use_fsdp = self.trainer_ctx.distributed.use_fsdp
         device = self.trainer_ctx.device.device
         scaler = self.trainer_ctx.precision.scaler
         grad_accum_steps = self.trainer_ctx.grad_accum_steps
-        train_local_token_sum = torch.tensor(0.0, device=device)
+        tokens_processed_sum = torch.tensor(0.0, device=device)
         console_logs = []
-        train_metric_sums = {}
-        train_metric_weights = {}
+        metrics_sum_acc = {}
+        metrics_weights_acc = {}
 
-        self.reset_memory_usage_metrics()
+        reset_memory_usage_metrics()
         self.model.train()
 
         t0 = torch.Event(enable_timing=True, device=device)
@@ -678,16 +657,16 @@ class Trainer:
         t0.record()
 
         for micro_step in range(grad_accum_steps):
-            train_output = self.task.train_micro_step(self.model, self.train_loader.next_batch(), self.task_assets)
-            train_local_token_sum += train_output.tokens_processed
-            loss_scaled = train_output.loss_for_backward
+            output = self.task.train_micro_step(self.model, self.train_loader.next_batch(), self.task_assets)
+            tokens_processed_sum += output.tokens_processed
+            loss_scaled = output.loss_for_backward
 
-            console_logs.extend(train_output.console_logs)
+            console_logs.extend(output.console_logs)
             accumulate_weighted_metrics(
-                weight=train_output.n_valid,
-                metrics=train_output.metrics,
-                metrics_sum_acc=train_metric_sums,
-                metrics_weights_acc=train_metric_weights,
+                weight=output.n_valid,
+                metrics=output.metrics,
+                metrics_sum_acc=metrics_sum_acc,
+                metrics_weights_acc=metrics_weights_acc,
                 device=device
             )
 
@@ -699,44 +678,132 @@ class Trainer:
             else:
                 loss_scaled.backward()
 
-        train_token_sum = train_local_token_sum
         if ddp:
-            dist.all_reduce(train_token_sum, op=dist.ReduceOp.SUM)
-        train_token_sum = train_token_sum.item()
-
-        aggregated_metrics = combine_weighted_metrics(
-            metrics_sum_acc=train_metric_sums,
-            metrics_weights_acc=train_metric_weights,
-            ddp=ddp
-        )
+            dist.all_reduce(tokens_processed_sum, op=dist.ReduceOp.SUM)
+        tokens_processed_sum = tokens_processed_sum.item()
 
         if scaler:
             self.unscale_optimizers(scaler)
 
         norm = self.clip_grad_norm(self.model, 1.0)
 
-        self.update_optimizers_lr()
+        lrs = self.update_optimizers_lr()
         self.optimizers_steps(scaler)
         self.zero_grad_optimizers()
 
         t1.record()
         t1.synchronize()
         dt = t0.elapsed_time(t1) / 1000.0
-        tokens_per_sec = train_token_sum / dt
+        tokens_per_sec = int(tokens_processed_sum / dt)
 
-        memory_usage_metrics = self.compute_memory_usage_metrics()
-        self.log_train_metrics(
-            norm,
-            dt,
-            tokens_per_sec,
-            console_logs,
-            aggregated_metrics,
-            memory_usage_metrics,
-            pbar
+        step_metrics = StepMetrics(
+            step_type=StepType.TRAIN,
+            norm=norm,
+            dt=dt,
+            tokens_per_sec=tokens_per_sec,
+            lrs=lrs
+        )
+        aggregated_metrics = combine_weighted_metrics(
+            metrics_sum_acc=metrics_sum_acc,
+            metrics_weights_acc=metrics_weights_acc,
+            ddp=ddp
+        )
+        memory_usage_metrics = compute_memory_usage_metrics(ddp_local_rank)
+        self.log_step_metrics(
+            step_metrics=step_metrics,
+            aggregated_metrics=aggregated_metrics,
+            memory_usage_metrics=memory_usage_metrics,
+            console_logs=console_logs,
+            pbar=pbar
         )
 
-    def run_validation(self):
-        pass
+    def prepare_moe_metrics(self):
+        if self.config.is_moe and self.config.moe_compute_stats:
+            get_model(self.model).enable_moe_stats()
+            get_model(self.model).reset_moe_stats()
+
+    def get_moe_metrics(self):
+        moe_metrics = {}
+        if self.config.is_moe and self.config.moe_compute_stats:
+            moe_metrics = collect_moe_metrics(
+                get_model(self.model),
+                self.trainer_ctx.distributed.ddp,
+                self.trainer_ctx.distributed.is_master_process
+            )
+            get_model(self.model).disable_moe_stats()
+        return moe_metrics
+
+    def run_validation(self, pbar):
+        ddp = self.trainer_ctx.distributed.ddp
+        device = self.trainer_ctx.device.device
+        is_master_process = self.trainer_ctx.distributed.is_master_process
+        early_stopping_patience = self.config.early_stopping_patience
+        early_stopping_patience_skip_steps = self.config.early_stopping_patience_skip_steps + self.trainer_state.start_step
+
+        loss_sum = torch.tensor(0.0, device=device)
+        tokens_sum = torch.tensor(0.0, device=device)
+        console_logs = []
+        metrics_sum_acc = {}
+        metrics_weights_acc = {}
+
+        self.model.eval()
+        self.prepare_moe_metrics()
+
+        with torch.no_grad():
+            for _ in tqdm(range(self.config.val_steps), 'Validating', disable=not is_master_process, leave=False):
+                output = self.task.validation_step(self.model, self.val_loader.next_batch(), self.task_assets)
+                loss = output.loss
+                n_valid = output.n_valid
+
+                console_logs.extend(output.console_logs)
+                accumulate_weighted_metrics(
+                    weight=n_valid,
+                    metrics=output.metrics,
+                    metrics_sum_acc=metrics_sum_acc,
+                    metrics_weights_acc=metrics_weights_acc,
+                    device=device
+                )
+
+                loss_sum += loss * n_valid
+                tokens_sum += n_valid
+
+        if ddp:
+            dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(tokens_sum, op=dist.ReduceOp.SUM)
+
+        self.trainer_state.last_val_loss = (loss_sum / tokens_sum).item()
+        if self.trainer_state.last_val_loss > self.trainer_state.best_val_loss:
+            self.trainer_state.best_val_loss = self.trainer_state.last_val_loss
+            self.trainer_state.num_val_runs_no_improve = 0
+        else:
+            skip_phase = (self.trainer_state.current_step < early_stopping_patience_skip_steps)
+            if not skip_phase:
+                self.trainer_state.num_val_runs_no_improve += 1
+
+            if self.trainer_state.num_val_runs_no_improve == early_stopping_patience:
+                self.trainer_state.should_stop = True
+
+            console_logs.extend(prepare_val_step_no_improve_log(
+                early_stopping_patience=early_stopping_patience,
+                early_stopping_patience_skip_steps=early_stopping_patience_skip_steps,
+                trainer_state=self.trainer_state,
+                skip_phase=skip_phase
+            ))
+
+        step_metrics = StepMetrics(step_type=StepType.VAL)
+        aggregated_metrics = combine_weighted_metrics(
+            metrics_sum_acc=metrics_sum_acc,
+            metrics_weights_acc=metrics_weights_acc,
+            ddp=ddp
+        )
+        moe_metrics = self.get_moe_metrics()
+        self.log_step_metrics(
+            step_metrics=step_metrics,
+            aggregated_metrics=aggregated_metrics,
+            moe_metrics=moe_metrics,
+            console_logs=console_logs,
+            pbar=pbar
+        )
 
     def run_save_checkpoint(self, pbar=None):
         if (
@@ -777,7 +844,7 @@ class Trainer:
 
         self.run_train(pbar)
         if self.should_run(step, self.config.validate_every_x_steps, is_last_step):
-            self.run_validation()
+            self.run_validation(pbar)
         if self.should_run(step, self.config.save_every_x_steps, is_last_step):
             self.run_save_checkpoint(pbar)
         if self.should_run(step, self.config.hellaswag_every_x_steps, is_last_step):
@@ -795,7 +862,6 @@ class Trainer:
 
         tqdm_label = f'Training ({self.config.training_stage.value})'
         abort_signal = torch.tensor([0], device=device)
-        early_stopping_patience_skip_steps = self.config.early_stopping_patience_skip_steps + self.trainer_state.start_step
 
         with self.torch_profiler_context as torch_profiler_ctx:
             pbar = tqdm(
@@ -808,7 +874,6 @@ class Trainer:
             )
             for step in pbar:
                 if abort_signal.item() == 1:
-                    logger.info(f'Rank {ddp_rank} received stop signal.', True)
                     break
                 self.trainer_state.current_step = step
                 self.trainer_state.is_last_step = (step == max_steps - 1)
@@ -817,6 +882,8 @@ class Trainer:
                 abort_signal[0] = 1 if self.trainer_state.should_stop else 0
                 if self.distributed_ctx.ddp:
                     broadcast(abort_signal, src=0)
+            if abort_signal.item() == 1:
+                logger.warn(f'Rank {ddp_rank} received stop signal.', True)
 
     def cleanup(self):
         if self.wandb:

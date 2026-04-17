@@ -6,6 +6,12 @@ from checkpoints import CheckpointData
 from engine.context import TrainerContext
 from engine.optim import OptimizerPlan
 from engine.core import TrainerState
+from metrics import (
+    MemoryUsageMetrics,
+    StepType,
+    StepMetrics,
+)
+from logger import logger
 
 
 def prepare_workload_summary(
@@ -59,3 +65,114 @@ def prepare_workload_summary(
     }
 
     return summary
+
+def prepare_train_step_log(
+    *,
+    step_metrics: StepMetrics,
+    trainer_state: TrainerState,
+    aggregated_metrics: dict[str, float],
+    memory_usage_metrics: MemoryUsageMetrics,
+    console_logs: list[str]
+):
+    if step_metrics.step_type != StepType.TRAIN:
+        raise ValueError(f'Invalid step type for logging: {step_metrics.step_type.value}')
+
+    step = trainer_state.current_step
+    last_val_loss = trainer_state.last_val_loss
+    best_val_loss = trainer_state.best_val_loss
+
+    train_loss = aggregated_metrics['Train Loss']
+
+    adam_lr = step_metrics.lrs.get('adamw_lr', None)
+    muon_lr = step_metrics.lrs.get('muon_lr', None)
+    lr_console_message = f'lr (adamw): {adam_lr:.4e}'
+    if muon_lr:
+        lr_console_message = f'lr (adamw/muon): {adam_lr:.4e} / {muon_lr:.4e}'
+    norm = step_metrics.norm
+    dt = step_metrics.dt
+    tokens_per_sec = step_metrics.tokens_per_sec
+
+    current_allocated_mb = memory_usage_metrics.current_allocated_mb
+    current_reserved_mb = memory_usage_metrics.current_reserved_mb
+    peak_allocated_mb = memory_usage_metrics.peak_allocated_mb
+    peak_reserved_mb = memory_usage_metrics.peak_reserved_mb
+
+    console_log = (
+        f'{step:4d} | '
+        f'train loss: {train_loss:.4f} | '
+        f'val (last/best): {last_val_loss:.4f} / {best_val_loss:.4f} | '
+        f'{lr_console_message} | '
+        f'norm: {norm:.4f} | '
+        f'dt: {dt:.2f}s | '
+        f'tok/s: {int(tokens_per_sec)}'
+        f'\n       mem MiB current alloc/res: {current_allocated_mb:.0f} / {current_reserved_mb:.0f} | '
+        f'peak alloc/res: {peak_allocated_mb:.0f} / {peak_reserved_mb:.0f}'
+    )
+
+    wandb_metrics = dict(aggregated_metrics)
+    wandb_metrics.update({
+        'Learning rate (adamw)': adam_lr,
+        'Learning rate (muon)': muon_lr,
+        'Norm': norm,
+        'Step time (seconds)': dt,
+        'Tokens (per sec)': tokens_per_sec,
+        'Peak Alloc MiB': peak_allocated_mb,
+        'Peak Reserved MiB': peak_reserved_mb,
+        'Alloc MiB': current_allocated_mb,
+        'Reserved MiB': current_reserved_mb
+    })
+
+    console_logs = [console_log, *console_logs]
+
+    return console_logs, wandb_metrics
+
+def prepare_val_step_log(
+    *,
+    step_metrics: StepMetrics,
+    trainer_state: TrainerState,
+    aggregated_metrics: dict[str, float],
+    moe_metrics: dict[str, int | float],
+    console_logs: list[str]
+):
+    if step_metrics.step_type != StepType.VAL:
+        raise ValueError(f'Invalid step type for logging: {step_metrics.step_type.value}')
+
+    step = trainer_state.current_step
+
+    console_log = (
+        f'{step:4d} | '
+        f'val loss: {trainer_state.last_val_loss:.4f}'
+    )
+
+    wandb_metrics = {'Validation Loss': trainer_state.last_val_loss}
+    wandb_metrics.update(aggregated_metrics)
+    if moe_metrics:
+        wandb_metrics.update(moe_metrics)
+
+    console_logs = [console_log, *console_logs]
+
+    return console_logs, wandb_metrics
+
+def prepare_val_step_no_improve_log(
+    *,
+    early_stopping_patience: int,
+    early_stopping_patience_skip_steps: int,
+    trainer_state: TrainerState,
+    skip_phase=False
+):
+    step = trainer_state.current_step
+    base_msg = f'validation loss did not improve. Best: {trainer_state.best_val_loss}, Latest: {trainer_state.last_val_loss}'
+    if skip_phase:
+        msg = logger.warning_wrapper(f'{base_msg} - (Skip phase...) steps left to skip: {early_stopping_patience_skip_steps - trainer_state.current_step}')
+        console_log = f'{step:4d} | {msg}'
+    else:
+        msg = logger.warning_wrapper(f'{base_msg} - Attempts left: {early_stopping_patience - trainer_state.num_val_runs_no_improve}')
+        console_log = f'{step:4d} | {msg}'
+
+    console_logs = [console_log]
+
+    if trainer_state.should_stop:
+        msg = logger.warning_wrapper(f'validation loss did not improve for: {early_stopping_patience} patience steps - Aborting training...')
+        console_logs.append(f'{step:4d} | {msg}')
+
+    return console_logs

@@ -105,8 +105,8 @@ class OptimizerPlan:
 
     def to_dict(self):
         return {
-            'adamw': self.adamw.to_dict(),
-            'muon': self.muon.to_dict()
+            'adamw': self.adamw.to_dict() if self.adamw else None,
+            'muon': self.muon.to_dict() if self.muon else None
         }
 
     def __repr__(self):
