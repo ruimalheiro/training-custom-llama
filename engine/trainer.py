@@ -77,18 +77,18 @@ from metrics import (
     StepType,
     StepMetrics
 )
+from generate import generate_and_decode
 
 
 class Trainer:
     def __init__(self, config, args):
         self.config = config
         self.args = args
+        self.trainer_state = TrainerState()
         self.distributed_ctx = None
         self.device_ctx = None
         self.precision_ctx = None
         self.trainer_ctx = None
-        self.trainer_state = TrainerState()
-        self.callbacks = []
         self.test_generation_prompts = None
         self.hellaswag_data = None
         self.tokenizer = None
@@ -576,7 +576,10 @@ class Trainer:
         return (step > 0 and step % every == 0) or (run_last_step and last_step)
 
     def clip_grad_norm(self, model, max_norm):
-        norm = clip_grad_norm_(model.parameters(), max_norm)
+        if self.config.use_fsdp:
+            norm = model.clip_grad_norm_(max_norm)
+        else:
+            norm = clip_grad_norm_(model.parameters(), max_norm)
         if isinstance(norm, DTensor):
             return norm.to_local()
         return norm
@@ -772,7 +775,7 @@ class Trainer:
             dist.all_reduce(tokens_sum, op=dist.ReduceOp.SUM)
 
         self.trainer_state.last_val_loss = (loss_sum / tokens_sum).item()
-        if self.trainer_state.last_val_loss > self.trainer_state.best_val_loss:
+        if self.trainer_state.last_val_loss < self.trainer_state.best_val_loss:
             self.trainer_state.best_val_loss = self.trainer_state.last_val_loss
             self.trainer_state.num_val_runs_no_improve = 0
         else:
@@ -780,7 +783,7 @@ class Trainer:
             if not skip_phase:
                 self.trainer_state.num_val_runs_no_improve += 1
 
-            if self.trainer_state.num_val_runs_no_improve == early_stopping_patience:
+            if self.trainer_state.num_val_runs_no_improve >= early_stopping_patience:
                 self.trainer_state.should_stop = True
 
             console_logs.extend(prepare_val_step_no_improve_log(
@@ -808,7 +811,8 @@ class Trainer:
     def run_save_checkpoint(self, pbar=None):
         if (
             not self.config.save_checkpoints or
-            self.config.save_best_only and self.trainer_state.num_val_runs_no_improve > 0
+            self.config.save_best_only and self.trainer_state.num_val_runs_no_improve > 0 or
+            math.isinf(self.trainer_state.best_val_loss)
         ):
             return
         save_checkpoint(
@@ -832,11 +836,28 @@ class Trainer:
             pbar
         )
 
-    def run_hellaswag_eval(self):
+    def run_hellaswag_eval(self, pbar):
         pass
 
-    def run_generation(self):
-        pass
+    def run_generation(self, pbar):
+        if not self.trainer_ctx.distributed.is_master_process:
+            return
+        self.model.eval()
+        logger.info(f'{self.trainer_state.current_step:4d} | Generation testing:', pbar=pbar)
+        logger.info('-----------------------------------------------', pbar=pbar)
+        for text in generate_and_decode(
+            model=get_model(self.model),
+            texts=self.test_generation_prompts,
+            max_gen_len=self.config.max_test_gen_len,
+            full_seq=True,
+            device=self.trainer_ctx.device.device,
+            is_instruct=self.config.is_instruct_training,
+            temperature=0.0,
+            top_p=1.0,
+            use_kv_cache=True
+        ):
+            logger.info(text, pbar=pbar)
+        logger.info('-----------------------------------------------', pbar=pbar)
 
     def process_step(self, pbar):
         step = self.trainer_state.current_step
@@ -848,9 +869,9 @@ class Trainer:
         if self.should_run(step, self.config.save_every_x_steps, is_last_step):
             self.run_save_checkpoint(pbar)
         if self.should_run(step, self.config.hellaswag_every_x_steps, is_last_step):
-            self.run_hellaswag_eval()
+            self.run_hellaswag_eval(pbar)
         if self.should_run(step, self.config.generate_every_x_steps, is_last_step):
-            self.run_generation()
+            self.run_generation(pbar)
 
     def start_training_loop(self):
         is_master_process = self.trainer_ctx.distributed.is_master_process
