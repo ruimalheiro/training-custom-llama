@@ -176,3 +176,23 @@ def prepare_val_step_no_improve_log(
         console_logs.append(f'{step:4d} | {msg}')
 
     return console_logs
+
+def prepare_hellaswag_log(
+    *,
+    step_metrics: StepMetrics,
+    trainer_state: TrainerState
+):
+    if step_metrics.step_type != StepType.HELLASWAG:
+        raise ValueError(f'Invalid step type for logging: {step_metrics.step_type.value}')
+
+    step = trainer_state.current_step
+
+    console_log = (
+        f'{step:4d} | '
+        f'hellaswag accuracy: {step_metrics.accuracy:.4f}'
+    )
+
+    wandb_metrics = {'HellaSwag accuracy': step_metrics.accuracy}
+    console_logs = [console_log]
+
+    return console_logs, wandb_metrics

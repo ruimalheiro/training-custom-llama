@@ -5,6 +5,7 @@ from enum import Enum
 class StepType(str, Enum):
     TRAIN = 'train'
     VAL = 'val'
+    HELLASWAG = 'hellaswag'
 
 @dataclass(frozen=True)
 class StepMetrics:
@@ -13,3 +14,4 @@ class StepMetrics:
     dt: float = None
     tokens_per_sec: int = None
     lrs: dict[str, float] = None
+    accuracy: float = None

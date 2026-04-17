@@ -31,7 +31,8 @@ from engine.logging import (
     prepare_workload_summary,
     prepare_train_step_log,
     prepare_val_step_log,
-    prepare_val_step_no_improve_log
+    prepare_val_step_no_improve_log,
+    prepare_hellaswag_log
 )
 from engine.torch_profiler import (
     init_torch_profiler_context
@@ -78,6 +79,7 @@ from metrics import (
     StepMetrics
 )
 from generate import generate_and_decode
+from hellaswag_utils import estimate_correct_candidate_selection
 
 
 class Trainer:
@@ -381,6 +383,10 @@ class Trainer:
             if checkpoint_data.optimizers_state is not None:
                 logger.warn('ignoring stored state of optimizer(s)...')
                 checkpoint_data.optimizers_state = None
+            if checkpoint_data.last_val_loss is not None and checkpoint_data.best_val_loss is not None:
+                logger.warn('ignoring stored last val loss and best val loss...')
+                checkpoint_data.last_val_loss = float('inf')
+                checkpoint_data.best_val_loss = float('inf')
             logger.info('\n')
         
         self.checkpoint_data = checkpoint_data
@@ -564,6 +570,11 @@ class Trainer:
                 moe_metrics=moe_metrics,
                 console_logs=console_logs
             )
+        elif step_metrics.step_type == StepType.HELLASWAG:
+            console_logs, wanb_log = prepare_hellaswag_log(
+                step_metrics=step_metrics,
+                trainer_state=self.trainer_state
+            )
         else:
             raise ValueError(f'Invalid step type for logging: {step_metrics.step_type.value}')
         for log in console_logs:
@@ -739,6 +750,7 @@ class Trainer:
             get_model(self.model).disable_moe_stats()
         return moe_metrics
 
+    @torch.inference_mode()
     def run_validation(self, pbar):
         ddp = self.trainer_ctx.distributed.ddp
         device = self.trainer_ctx.device.device
@@ -755,23 +767,22 @@ class Trainer:
         self.model.eval()
         self.prepare_moe_metrics()
 
-        with torch.inference_mode():
-            for _ in tqdm(range(self.config.val_steps), 'Validating', disable=not is_master_process, leave=False):
-                output = self.task.validation_step(self.model, self.val_loader.next_batch(), self.task_assets)
-                loss = output.loss
-                n_valid = output.n_valid
+        for _ in tqdm(range(self.config.val_steps), 'Validating', disable=not is_master_process, leave=False):
+            output = self.task.validation_step(self.model, self.val_loader.next_batch(), self.task_assets)
+            loss = output.loss
+            n_valid = output.n_valid
 
-                console_logs.extend(output.console_logs)
-                accumulate_weighted_metrics(
-                    weight=n_valid,
-                    metrics=output.metrics,
-                    metrics_sum_acc=metrics_sum_acc,
-                    metrics_weights_acc=metrics_weights_acc,
-                    device=device
-                )
+            console_logs.extend(output.console_logs)
+            accumulate_weighted_metrics(
+                weight=n_valid,
+                metrics=output.metrics,
+                metrics_sum_acc=metrics_sum_acc,
+                metrics_weights_acc=metrics_weights_acc,
+                device=device
+            )
 
-                loss_sum += loss * n_valid
-                tokens_sum += n_valid
+            loss_sum += loss * n_valid
+            tokens_sum += n_valid
 
         if ddp:
             dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
@@ -843,29 +854,74 @@ class Trainer:
             pbar
         )
 
+    @torch.inference_mode()
     def run_hellaswag_eval(self, pbar):
-        pass
+        if not self.config.is_pretraining:
+            return
+        ddp = self.trainer_ctx.distributed.ddp
+        is_master_process = self.trainer_ctx.distributed.is_master_process
+        device = self.trainer_ctx.device.device
+        device_type = self.trainer_ctx.device.device_type
+        autocast_dtype = self.trainer_ctx.precision.autocast_dtype
+        use_autocast = self.trainer_ctx.precision.use_autocast
 
+        num_correct_norm = 0
+        num_total = 0
+        self.model.eval()
+        for example in tqdm(
+            self.hellaswag_data,
+            f'{self.trainer_state.current_step:4d} | HellaSwag validation',
+            unit=' examples',
+            disable=not is_master_process,
+            leave=False
+        ):
+            tokens, mask, label, valid = example['tokens'], example['mask'], example['label'], example['valid']
+            if self.config.use_fsdp and not valid:
+                # Some examples might be dummy in FSDP
+                continue
+
+            tokens = tokens.to(device)
+            mask = mask.to(device)
+
+            with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
+                logits = self.model(tokens)['logits']
+
+            predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
+            num_total += 1
+            num_correct_norm += int(predicted_correct == label)
+
+        if ddp:
+            num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+            num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+            dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+            dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+            num_total = num_total.item()
+            num_correct_norm = num_correct_norm.item()
+        acc_norm = num_correct_norm / num_total
+
+        step_metrics = StepMetrics(step_type=StepType.HELLASWAG, accuracy=acc_norm)
+        self.log_step_metrics(step_metrics=step_metrics, pbar=pbar)
+
+    @torch.inference_mode()
     def run_generation(self, pbar):
         if not self.trainer_ctx.distributed.is_master_process:
             return
         self.model.eval()
-        with torch.inference_mode():
-            logger.info(f'{self.trainer_state.current_step:4d} | Generation testing:', pbar=pbar)
-            logger.info('-----------------------------------------------', pbar=pbar)
-            for text in generate_and_decode(
-                model=get_model(self.model),
-                texts=self.test_generation_prompts,
-                max_gen_len=self.config.max_test_gen_len,
-                full_seq=True,
-                device=self.trainer_ctx.device.device,
-                is_instruct=self.config.is_instruct_training,
-                temperature=0.0,
-                top_p=1.0,
-                use_kv_cache=True
-            ):
-                logger.info(text, pbar=pbar)
-            logger.info('-----------------------------------------------', pbar=pbar)
+        logger.info(f'{self.trainer_state.current_step:4d} | Generation testing:', pbar=pbar)
+        logger.info('-----------------------------------------------', pbar=pbar)
+        for text in generate_and_decode(
+            model=get_model(self.model),
+            texts=self.test_generation_prompts,
+            max_gen_len=self.config.max_test_gen_len,
+            full_seq=True,
+            device=self.trainer_ctx.device.device,
+            is_instruct=self.config.is_instruct_training,
+            temperature=0.0,
+            top_p=1.0,
+            use_kv_cache=True
+        ):
+            logger.info(text, pbar=pbar)
+        logger.info('-----------------------------------------------', pbar=pbar)
 
     def process_step(self, pbar):
         step = self.trainer_state.current_step
