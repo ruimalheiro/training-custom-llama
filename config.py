@@ -48,8 +48,6 @@ class TrainConfig(BaseSettings):
     torch_profiler_schedule_warmup: int = Field(default=1, alias='TORCH_PROFILER_SCHEDULE_WARMUP')
     torch_profiler_schedule_active: int = Field(default=1, alias='TORCH_PROFILER_SCHEDULE_ACTIVE')
     torch_profiler_schedule_repeat: int = Field(default=0, alias='TORCH_PROFILER_SCHEDULE_REPEAT')
-    torch_profiler_tensorboard_enabled: bool = Field(default=False, alias='TORCH_PROFILER_TENSORBOARD_ENABLED')
-    torch_profiler_tensorboard_log_path: str = Field(alias='TORCH_PROFILER_TENSORBOARD_LOG_PATH')
 
     # paths for dataloaders
     pretrain_dataloader_root_path: str = Field(alias='PRETRAIN_DATALOADER_ROOT_PATH')
@@ -198,9 +196,7 @@ class TrainConfig(BaseSettings):
                 'torch_profiler_schedule_wait': data['torch_profiler_schedule_wait'],
                 'torch_profiler_schedule_warmup': data['torch_profiler_schedule_warmup'],
                 'torch_profiler_schedule_active': data['torch_profiler_schedule_active'],
-                'torch_profiler_schedule_repeat': data['torch_profiler_schedule_repeat'],
-                'torch_profiler_tensorboard_enabled': data['torch_profiler_tensorboard_enabled'],
-                'torch_profiler_tensorboard_log_path': data['torch_profiler_tensorboard_log_path']
+                'torch_profiler_schedule_repeat': data['torch_profiler_schedule_repeat']
             },
             'datasets': {
                 'pretrain_dataset_mix_file': data['pretrain_dataset_mix_file'],

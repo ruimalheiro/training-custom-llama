@@ -213,11 +213,6 @@ The file `config.py` defines all the environment variables required.
 ## Using torch profiler
 Details on the environment variables suggested in `.env.example` can be found [here](https://docs.pytorch.org/tutorials/recipes/recipes/profiler_recipe.html).
 
-If using tensorboard, in a different shell start:
-```bash
-tensorboard --logdir <LOG_PATH> --bind_all
-```
-
 ## Run tests
 From the root folder:
 ```bash
