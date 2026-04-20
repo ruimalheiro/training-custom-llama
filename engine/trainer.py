@@ -500,6 +500,7 @@ class Trainer:
             self.trainer_state.current_step = 0 if self.args.start_step is None else self.args.start_step
 
     def prepare_workload_summary_json(self):
+        train_loader_max_tokens = self.train_loader.calculate_max_tokens() # This is distributed
         if self.distributed_ctx.is_master_process:
             self.workload_summary = prepare_workload_summary(
                 config=self.config,
@@ -510,7 +511,7 @@ class Trainer:
                 trainer_state=self.trainer_state,
                 model_params_count=get_model(self.model).get_total_parameters_count(),
                 model_trainable_params_count=get_model(self.model).get_trainable_parameters_count(),
-                total_tokens=self.train_loader.calculate_max_tokens()
+                total_tokens=train_loader_max_tokens
             )
 
     def log_workload_summary(self):
@@ -540,7 +541,7 @@ class Trainer:
     def check_all_devices_ready(self):
         if self.distributed_ctx.ddp and dist.is_initialized():
             dist.barrier()
-        logger.info(f'\nDevice: {self.distributed_ctx.ddp_local_rank} is ready.', True)
+        logger.info(f'\nDevice: {self.distributed_ctx.ddp_local_rank} is ready.', force=True)
 
     def log_step_metrics(
         self,
