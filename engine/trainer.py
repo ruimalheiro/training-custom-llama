@@ -361,19 +361,28 @@ class Trainer:
         training_stage_changed = (
             checkpoint_data.metadata.get('training_stage', None) != self.config.training_stage.value
         )
-
-        ddp_world_size_changed = (
-            checkpoint_data.metadata.get('ddp_world_size', None) != self.distributed_ctx.ddp_world_size
-        )
-
-        if args.reset_optimizers:
-            logger.warn('Reset optimizers flag was set')
-
         if training_stage_changed:
             logger.warn('Training stage has changed')
             if checkpoint_data.resume_step:
                 logger.warn('ignoring stored resume step...')
-                checkpoint_data.resume_step=0
+                checkpoint_data.resume_step = 0
+
+        ddp_world_size_changed = (
+            checkpoint_data.metadata.get('ddp_world_size', None) != self.distributed_ctx.ddp_world_size
+        )
+        if ddp_world_size_changed:
+            logger.warn('DDP world size has changed')
+
+        lora_mode_changed = (
+            self.config.lora_enabled and
+            checkpoint_data is not None and
+            not checkpoint_data.is_lora_checkpoint
+        )
+        if lora_mode_changed:
+            logger.warn('LoRA enabled for non LoRA checkpoint')
+
+        if args.reset_optimizers:
+            logger.warn('Reset optimizers flag was set')
 
         if ddp_world_size_changed or training_stage_changed:
             if checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
@@ -381,7 +390,7 @@ class Trainer:
                 checkpoint_data.train_loader_state = None
                 checkpoint_data.val_loader_state = None
 
-        if training_stage_changed or args.reset_optimizers:
+        if training_stage_changed or args.reset_optimizers or lora_mode_changed:
             if checkpoint_data.optimizers_state is not None:
                 logger.warn('ignoring stored state of optimizer(s)...')
                 checkpoint_data.optimizers_state = None
