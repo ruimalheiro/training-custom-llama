@@ -42,8 +42,8 @@ def manage_checkpoints(directory, max_files, step, pbar=None):
         cutoff_step = steps_files[cutoff_index][0]
 
         # Delete files
-        for step, file in steps_files:
-            if step < cutoff_step:
+        for prev_step, file in steps_files:
+            if prev_step < cutoff_step:
                 os.remove(file)
                 logger.info(f'{step:4d} | deleted old checkpoint: {file}', pbar=pbar)
 

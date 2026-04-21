@@ -131,7 +131,7 @@ class Trainer:
         self.load_assets()
         self.build_components()
         self.resolve_checkpoint()
-        self.apply_lora()
+        self.resolve_apply_lora()
         self.build_task()
         self.prepare_model_for_distributed_context()
         self.move_task_assets_to_device()
@@ -409,7 +409,6 @@ class Trainer:
             alpha=config.lora_alpha,
             dropout=config.lora_dropout,
             target_modules=config.lora_target_modules,
-            device=self.device_ctx.device,
             is_master_process=self.distributed_ctx.is_master_process
         )
         # by default we freeze the other parameters
@@ -421,7 +420,7 @@ class Trainer:
                 raise ValueError('"lora_enabled" must be set to True when loading checkpoint that includes LoRA')
             self.apply_lora_modification()
 
-    def apply_lora(self):
+    def resolve_apply_lora(self):
         if (
             self.config.lora_enabled and
             (

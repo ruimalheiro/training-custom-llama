@@ -35,7 +35,7 @@ def model_has_lora(model):
 
 def apply_lora(
     model,
-    device,
+    device='cpu',
     target_modules=('wq', 'wk', 'wv', 'wo', 'w1', 'w3'),
     rank=16,
     alpha=8,
