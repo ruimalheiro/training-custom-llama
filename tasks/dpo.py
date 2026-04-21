@@ -1,29 +1,54 @@
 import torch
+import copy
 
-from tasks.base import BaseTask, TaskStepOutput
+from dataclasses import dataclass
+from tasks.base import (
+    BaseTask,
+    TaskStepOutput,
+    TaskAssets
+)
 from dpo_utils import (
     dpo_log_probs,
     dpo_loss
 )
+from logger import logger
 
+
+@dataclass
+class DPOTaskAssets(TaskAssets):
+    dpo_ref_model: torch.nn.Module | None = None
 
 class DPOTask(BaseTask):
     name: str = 'dpo'
 
-    def setup(self, config, ctx, *, dpo_ref_model, **kwargs):
+    def setup(self, config, ctx, **kwargs):
         super().setup(config, ctx, **kwargs)
-
-        assert dpo_ref_model is not None, 'DPOTask requires a reference model'
-
-        self.dpo_ref_model = dpo_ref_model
-
         return self
 
-    def train_micro_step(self, model, batch):
-        device = self.ctx.device
-        device_type = self.ctx.device_type
-        autocast_dtype = self.ctx.autocast_dtype
-        use_autocast = self.ctx.use_autocast
+    def build_assets(self, tokenizer, model):
+        if not self.config.is_dpo_training:
+            return DPOTaskAssets()
+        model_dtype = self.ctx.precision.model_dtype
+        logger.info(f'Preparing DPO reference model...', True)
+        dpo_ref_model = copy.deepcopy(model).eval()
+        for p in dpo_ref_model.parameters():
+            p.requires_grad = False
+        logger.info(f'Finished preparing DPO reference model', True)
+        return DPOTaskAssets(dpo_ref_model=dpo_ref_model)
+
+    def move_assets_to_device(self, assets: DPOTaskAssets) -> DPOTaskAssets:
+        if not assets.dpo_ref_model:
+            return assets
+        device = self.ctx.device.device
+        model_dtype = self.ctx.precision.model_dtype
+        assets.dpo_ref_model = assets.dpo_ref_model.to(device, dtype=model_dtype).eval()
+        return assets
+
+    def train_micro_step(self, model, batch, assets: DPOTaskAssets):
+        device = self.ctx.device.device
+        device_type = self.ctx.device.device_type
+        autocast_dtype = self.ctx.precision.autocast_dtype
+        use_autocast = self.ctx.precision.use_autocast
         grad_accum_steps = self.ctx.grad_accum_steps
         dpo_beta = self.config.dpo_beta
 
@@ -41,8 +66,8 @@ class DPOTask(BaseTask):
 
         with torch.no_grad():
             with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
-                reference_log_probs_pos = dpo_log_probs(self.dpo_ref_model, x, y)
-                reference_log_probs_neg = dpo_log_probs(self.dpo_ref_model, x, z)
+                reference_log_probs_pos = dpo_log_probs(assets.dpo_ref_model, x, y)
+                reference_log_probs_neg = dpo_log_probs(assets.dpo_ref_model, x, z)
 
         loss, dpo_metrics = dpo_loss(
             policy_log_probs_pos,
@@ -72,11 +97,11 @@ class DPOTask(BaseTask):
         )
 
     @torch.no_grad()
-    def validation_step(self, model, batch):
-        device = self.ctx.device
-        device_type = self.ctx.device_type
-        autocast_dtype = self.ctx.autocast_dtype
-        use_autocast = self.ctx.use_autocast
+    def validation_step(self, model, batch, assets: DPOTaskAssets):
+        device = self.ctx.device.device
+        device_type = self.ctx.device.device_type
+        autocast_dtype = self.ctx.precision.autocast_dtype
+        use_autocast = self.ctx.precision.use_autocast
         dpo_beta = self.config.dpo_beta
 
         # x, y, z = prompt, chosen, rejected
@@ -88,8 +113,8 @@ class DPOTask(BaseTask):
         with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
             policy_log_probs_pos = dpo_log_probs(model, x, y)
             policy_log_probs_neg = dpo_log_probs(model, x, z)
-            reference_log_probs_pos = dpo_log_probs(self.dpo_ref_model, x, y)
-            reference_log_probs_neg = dpo_log_probs(self.dpo_ref_model, x, z)
+            reference_log_probs_pos = dpo_log_probs(assets.dpo_ref_model, x, y)
+            reference_log_probs_neg = dpo_log_probs(assets.dpo_ref_model, x, z)
 
         loss, dpo_metrics = dpo_loss(
             policy_log_probs_pos,

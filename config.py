@@ -1,10 +1,7 @@
-import torch
-
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
 from enum import Enum
 from typing import Tuple, Annotated
-from torch.distributed.fsdp import MixedPrecisionPolicy
 
 
 class DeviceType(str, Enum):
@@ -22,8 +19,8 @@ class TrainingPrecision(str, Enum):
 
 class TrainConfig(BaseSettings):
     # third party envs
-    wandb_api_key: Annotated[str | None, Field(alias='WANDB_API_KEY')] = None
-    hf_token: Annotated[str | None, Field(alias='HF_TOKEN')] = None
+    wandb_api_key: Annotated[str | None, Field(alias='WANDB_API_KEY', exclude=True)] = None
+    hf_token: Annotated[str | None, Field(alias='HF_TOKEN', exclude=True)] = None
     hf_home: str = Field(default='./cache', alias='HF_HOME')
 
     # datasets
@@ -51,8 +48,6 @@ class TrainConfig(BaseSettings):
     torch_profiler_schedule_warmup: int = Field(default=1, alias='TORCH_PROFILER_SCHEDULE_WARMUP')
     torch_profiler_schedule_active: int = Field(default=1, alias='TORCH_PROFILER_SCHEDULE_ACTIVE')
     torch_profiler_schedule_repeat: int = Field(default=0, alias='TORCH_PROFILER_SCHEDULE_REPEAT')
-    torch_profiler_tensorboard_enabled: bool = Field(default=False, alias='TORCH_PROFILER_TENSORBOARD_ENABLED')
-    torch_profiler_tensorboard_log_path: str = Field(alias='TORCH_PROFILER_TENSORBOARD_LOG_PATH')
 
     # paths for dataloaders
     pretrain_dataloader_root_path: str = Field(alias='PRETRAIN_DATALOADER_ROOT_PATH')
@@ -72,6 +67,8 @@ class TrainConfig(BaseSettings):
     dpo_load_checkpoints_path: str = Field(alias='DPO_LOAD_CHECKPOINTS_PATH')
 
     save_checkpoints: bool = Field(default=False, alias='SAVE_CHECKPOINTS')
+    save_best_only: bool = Field(default=False, alias='SAVE_BEST_ONLY')
+    save_every_x_steps: int = Field(alias='SAVE_EVERY_X_STEPS')
     max_number_checkpoints: int = Field(default=2, alias='MAX_NUMBER_CHECKPOINTS')
 
     # wandb
@@ -92,12 +89,22 @@ class TrainConfig(BaseSettings):
     training_precision: TrainingPrecision = Field(default=TrainingPrecision.BF16, alias='TRAINING_PRECISION')
     training_stage: TrainingStage = Field(default=TrainingStage.PRETRAIN, alias='TRAINING_STAGE')
     total_batch_size: int = Field(alias='TOTAL_BATCH_SIZE')
-    max_lr: float = Field(alias='MAX_LR')
-    min_lr: float = Field(alias='MIN_LR')
-    warmup_steps: int = Field(alias='WARMUP_STEPS')
-    weight_decay: float = Field(alias='WEIGHT_DECAY')
     max_steps: int = Field(default=-1, alias='MAX_STEPS') # If not set, it is aprox calculated
+
+    adamw_min_lr: float = Field(alias='ADAMW_MIN_LR')
+    adamw_max_lr: float = Field(alias='ADAMW_MAX_LR')
+    adamw_weight_decay: float = Field(alias='ADAMW_WEIGHT_DECAY')
     adamw_betas: Tuple[float, float] = Field(default=(0.9, 0.95), alias='ADAMW_BETAS')
+    adamw_use_fused: Annotated[bool | None, Field(alias='ADAMW_USE_FUSED')] = None
+    adamw_warmup_steps: int = Field(alias='ADAMW_WARMUP_STEPS')
+
+    use_muon: bool = Field(default=False, alias='USE_MUON')
+    muon_min_lr: float = Field(alias='MUON_MIN_LR')
+    muon_max_lr: float = Field(alias='MUON_MAX_LR')
+    muon_weight_decay: float = Field(alias='MUON_WEIGHT_DECAY')
+    muon_momentum: float = Field(alias='MUON_MOMENTUM', default=0.95)
+    muon_warmup_steps: int = Field(alias='MUON_WARMUP_STEPS')
+
     early_stopping_patience: int = Field(alias='EARLY_STOPPING_PATIENCE')
     early_stopping_patience_skip_steps: int = Field(alias='EARLY_STOPPING_PATIENCE_SKIP_STEPS')
     dpo_beta: float = Field(default=0.1, alias='DPO_BETA')
@@ -152,12 +159,6 @@ class TrainConfig(BaseSettings):
     dataloader_root_path: str = Field(default='', repr=False)
     save_checkpoints_path: str = Field(default='', repr=False)
 
-    use_autocast: bool = Field(default=False, repr=False)
-    scaler: torch.amp.GradScaler | None = Field(default=None, repr=False)
-    model_dtype: torch.dtype | None = Field(default=None, repr=False)
-    autocast_dtype: torch.dtype | None = Field(default=None, repr=False)
-    fsdp_mp: MixedPrecisionPolicy | None = Field(default=None, repr=False)
-
     def model_post_init(self, __context: any) -> None:
         self.is_pretraining = self.training_stage == TrainingStage.PRETRAIN
         self.is_instruct_training = self.training_stage == TrainingStage.INSTRUCT
@@ -175,32 +176,155 @@ class TrainConfig(BaseSettings):
         else:
             raise ValueError(f'Invalid training stage: {self.training_stage}')
 
-        if self.training_precision == TrainingPrecision.BF16:
-            self.use_autocast = True
-            self.scaler = None
-            self.model_dtype = torch.float32
-            self.autocast_dtype = torch.bfloat16
-            self.fsdp_mp = MixedPrecisionPolicy(
-                param_dtype=torch.bfloat16,
-                reduce_dtype=torch.float32
-            ) if self.use_fsdp else None
-        elif self.training_precision == TrainingPrecision.FP16:
-            self.use_autocast = True
-            self.scaler = torch.amp.GradScaler(self.device_type) # need gradscaler when fp16
-            self.model_dtype = torch.float32
-            self.autocast_dtype = torch.float16
-            self.fsdp_mp = MixedPrecisionPolicy(
-                param_dtype=torch.float16,
-                reduce_dtype=torch.float32
-            ) if self.use_fsdp else None
-        elif self.training_precision == TrainingPrecision.FP32:
-            self.use_autocast = False
-            self.scaler = None
-            self.model_dtype = torch.float32
-            self.autocast_dtype = torch.float32
-            self.fsdp_mp = None
-        else:
-            raise ValueError('Invalid training precision')
+    def to_summary_dict(self, include_model_config: bool = True) -> dict:
+        data = self.model_dump(exclude={'wandb_api_key', 'hf_token'})
+        summary = {
+            'third_part': {
+                'hf_home': data['hf_home']
+            },
+            'runtime': {
+                'number_of_cpu_processes': data['number_of_cpu_processes'],
+                'mp_pool_chunk_size': data['mp_pool_chunk_size'],
+                'hf_map_batch_size': data['hf_map_batch_size'],
+                'hf_map_writer_batch_size': data['hf_map_writer_batch_size'],
+                'use_torch_compile': data['use_torch_compile'],
+                'use_fsdp': data['use_fsdp']
+            },
+            'torch_profiler': {
+                'torch_profiler_enabled': data['torch_profiler_enabled'],
+                'torch_profiler_schedule_skip_first': data['torch_profiler_schedule_skip_first'],
+                'torch_profiler_schedule_wait': data['torch_profiler_schedule_wait'],
+                'torch_profiler_schedule_warmup': data['torch_profiler_schedule_warmup'],
+                'torch_profiler_schedule_active': data['torch_profiler_schedule_active'],
+                'torch_profiler_schedule_repeat': data['torch_profiler_schedule_repeat']
+            },
+            'datasets': {
+                'pretrain_dataset_mix_file': data['pretrain_dataset_mix_file'],
+                'pretrain_dataset_target_path': data['pretrain_dataset_target_path'],
+                'instruct_dataset_mix_file': data['instruct_dataset_mix_file'],
+                'instruct_dataset_target_path': data['instruct_dataset_target_path'],
+                'dpo_dataset_mix_file': data['dpo_dataset_mix_file'],
+                'dpo_dataset_target_path': data['dpo_dataset_target_path'],
+                'hf_include_source_id': data['hf_include_source_id']
+            },
+            'eval_data': {
+                'hellaswag_path': data['hellaswag_path'],
+                'test_prompts_path': data['test_prompts_path']
+            },
+            'dataloaders': {
+                'pretrain_dataloader_root_path': data['pretrain_dataloader_root_path'],
+                'instruct_dataloader_root_path': data['instruct_dataloader_root_path'],
+                'dpo_dataloader_root_path': data['dpo_dataloader_root_path'],
+                'dataloader_root_path': data['dataloader_root_path']
+            },
+            'checkpoints': {
+                'pretrain_save_checkpoints_path': data['pretrain_save_checkpoints_path'],
+                'pretrain_load_checkpoints_path': data['pretrain_load_checkpoints_path'],
+                'instruct_save_checkpoints_path': data['instruct_save_checkpoints_path'],
+                'instruct_load_checkpoints_path': data['instruct_load_checkpoints_path'],
+                'dpo_save_checkpoints_path': data['dpo_save_checkpoints_path'],
+                'dpo_load_checkpoints_path': data['dpo_load_checkpoints_path'],
+                'save_checkpoints': data['save_checkpoints'],
+                'save_best_only': data['save_best_only'],
+                'save_every_x_steps': data['save_every_x_steps'],
+                'max_number_checkpoints': data['max_number_checkpoints']
+            },
+            'wandb': {
+                'wandb_enabled': data['wandb_enabled'],
+                'wandb_project_name': data['wandb_project_name'],
+                'wandb_run_name': data['wandb_run_name']
+            },
+            'system_prompt': data['system_prompt'],
+            'tokenizer': {
+                'huggingface_tokenizer': data['huggingface_tokenizer'],
+                'tokenizer_checkpoint_path': data['tokenizer_checkpoint_path']
+            },
+            'padding': {
+                'ignore_index': data['ignore_index']
+            },
+            'distillation_config': {
+                'is_model_distillation': data['is_model_distillation'],
+                'distillation_temperature': data['distillation_temperature'],
+                'teacher_model_checkpoint': data['teacher_model_checkpoint']
+            },
+            'dpo_config': {
+                'dpo_beta': data['dpo_beta']
+            },
+            'lora': {
+                'lora_enabled': data['lora_enabled'],
+                'lora_rank': data['lora_rank'],
+                'lora_alpha': data['lora_alpha'],
+                'lora_dropout': data['lora_dropout'],
+                'lora_target_modules': data['lora_target_modules']
+            },
+            'optimizers_config': {
+                'adamw': {
+                    'adamw_min_lr': data['adamw_min_lr'],
+                    'adamw_max_lr': data['adamw_max_lr'],
+                    'adamw_weight_decay': data['adamw_weight_decay'],
+                    'adamw_betas': data['adamw_betas'],
+                    'adamw_use_fused': data['adamw_use_fused'],
+                    'adamw_warmup_steps': data['adamw_warmup_steps']
+                },
+                'muon': {
+                    'use_muon': data['use_muon'],
+                    'muon_min_lr': data['muon_min_lr'],
+                    'muon_max_lr': data['muon_max_lr'],
+                    'muon_weight_decay': data['muon_weight_decay'],
+                    'muon_momentum': data['muon_momentum'],
+                    'muon_warmup_steps': data['muon_warmup_steps']
+                }
+            },
+            'training_config': {
+                'seed': data['seed'],
+                'training_stage': data['training_stage'].value,
+                'device_type': data['device_type'].value,
+                'training_precision': data['training_precision'].value,
+                'total_batch_size': data['total_batch_size'],
+                'max_steps': data['max_steps'],
+                'early_stopping_patience': data['early_stopping_patience'],
+                'early_stopping_patience_skip_steps': data['early_stopping_patience_skip_steps']
+            },
+            'validation_config': {
+                'validate_every_x_steps': data['validate_every_x_steps'],
+                'val_steps': data['val_steps'],
+                'hellaswag_every_x_steps': data['hellaswag_every_x_steps'],
+                'hellaswag_number_of_examples': data['hellaswag_number_of_examples']
+            },
+            'generation_config': {
+                'generate_every_x_steps': data['generate_every_x_steps'],
+                'max_test_gen_len': data['max_test_gen_len']
+            },
+            'derived': {
+                'is_pretraining': data['is_pretraining'],
+                'is_instruct_training': data['is_instruct_training'],
+                'is_dpo_training': data['is_dpo_training'],
+                'dataloader_root_path': data['dataloader_root_path'],
+                'save_checkpoints_path': data['save_checkpoints_path']
+            }
+        }
+        if include_model_config is True:
+            summary['model_config'] = {
+                'dim': data['dim'],
+                'n_layers': data['n_layers'],
+                'n_heads': data['n_heads'],
+                'n_kv_heads': data['n_kv_heads'],
+                'multiple_of': data['multiple_of'],
+                'ffn_dim_multiplier': data['ffn_dim_multiplier'],
+                'norm_eps': data['norm_eps'],
+                'is_rope_cis': data['is_rope_cis'],
+                'rope_theta': data['rope_theta'],
+                'max_batch_size': data['max_batch_size'],
+                'max_seq_len': data['max_seq_len'],
+                'is_moe': data['is_moe'],
+                'moe_num_experts': data['moe_num_experts'],
+                'moe_expert_dim': data['moe_expert_dim'],
+                'moe_top_k': data['moe_top_k'],
+                'moe_load_balancing_coef': data['moe_load_balancing_coef'],
+                'moe_z_loss_coef': data['moe_z_loss_coef'],
+                'moe_compute_stats': data['moe_compute_stats']
+            }
+        return summary
 
     model_config = ConfigDict(
         env_file = '.env',

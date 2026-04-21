@@ -1,24 +1,53 @@
 import torch
 
-from tasks.base import BaseTask, TaskStepOutput
+from dataclasses import dataclass
+from transformers import AutoModelForCausalLM
+from tasks.base import (
+    BaseTask,
+    TaskStepOutput,
+    TaskAssets
+)
 from distillation_utils import distillation_loss
+from logger import logger
 
+
+@dataclass
+class CausalTaskAssets(TaskAssets):
+    teacher_model: torch.nn.Module | None = None
 
 class CausalTask(BaseTask):
     name: str = 'causal'
 
-    def setup(self, config, ctx, *, teacher_model=None, **kwargs):
+    def setup(self, config, ctx, **kwargs):
         super().setup(config, ctx, **kwargs)
-
-        self.teacher_model = teacher_model
-
         return self
 
-    def train_micro_step(self, model, batch):
-        device = self.ctx.device
-        device_type = self.ctx.device_type
-        autocast_dtype = self.ctx.autocast_dtype
-        use_autocast = self.ctx.use_autocast
+    def build_assets(self, tokenizer, model):
+        config = self.config
+        if not config.is_model_distillation:
+            return CausalTaskAssets()
+        ddp_rank = self.ctx.distributed.ddp_rank
+        logger.info(f'Loading teacher model on gpu: {ddp_rank}...', True)
+        teacher_model = AutoModelForCausalLM.from_pretrained(config.teacher_model_checkpoint, token=config.hf_token)
+        if teacher_model.vocab_size != tokenizer.vocab_size:
+            logger.warn(f'The sizes of the vocabularies for the teacher model and the tokenizer do not match: {teacher_model.vocab_size} != {tokenizer.vocab_size}\nResizing the vocab of the teacher model to match the tokenizer... NOTE: This can potentially cause issues.')
+            teacher_model.resize_token_embeddings(tokenizer.vocab_size)
+        logger.info(f'Finished loading teacher model on gpu: {ddp_rank}...', True)
+        return CausalTaskAssets(teacher_model=teacher_model)
+
+    def move_assets_to_device(self, assets: CausalTaskAssets) -> CausalTaskAssets:
+        if not assets.teacher_model:
+            return assets
+        device = self.ctx.device.device
+        model_dtype = self.ctx.precision.model_dtype
+        assets.teacher_model = assets.teacher_model.to(device, dtype=model_dtype).eval()
+        return assets
+
+    def train_micro_step(self, model, batch, assets: CausalTaskAssets):
+        device = self.ctx.device.device
+        device_type = self.ctx.device.device_type
+        autocast_dtype = self.ctx.precision.autocast_dtype
+        use_autocast = self.ctx.precision.use_autocast
         grad_accum_steps = self.ctx.grad_accum_steps
 
         x, y = batch
@@ -41,11 +70,11 @@ class CausalTask(BaseTask):
             'Train Loss': loss.detach()
         }
 
-        if self.teacher_model is not None:
+        if self.config.is_model_distillation:
             tokens_processed += x.numel()
 
             with torch.no_grad():
-                teacher_logits = self.teacher_model(input_ids=x)['logits']
+                teacher_logits = assets.teacher_model(input_ids=x)['logits']
 
             loss_distil = distillation_loss(
                 teacher_logits,
@@ -70,11 +99,11 @@ class CausalTask(BaseTask):
         )
 
     @torch.no_grad()
-    def validation_step(self, model, batch):
-        device = self.ctx.device
-        device_type = self.ctx.device_type
-        autocast_dtype = self.ctx.autocast_dtype
-        use_autocast = self.ctx.use_autocast
+    def validation_step(self, model, batch, assets: CausalTaskAssets):
+        device = self.ctx.device.device
+        device_type = self.ctx.device.device_type
+        autocast_dtype = self.ctx.precision.autocast_dtype
+        use_autocast = self.ctx.precision.use_autocast
 
         x, y = batch
         x = x.to(device, non_blocking=True)

@@ -58,7 +58,6 @@ The model implementation was originally based on the Llama 3 architecture but la
 - `logger.py` Simple reusable logger.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` To store learning rate schedulers, for now just a cosine scheduler.
-- `model_utils.py` Contains utils like model parameter count, clip grad and logging the task summary.
   - Torch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
   - Weights & Biases [here](https://wandb.ai/site/)
 - `model.py` Implements the custom Llama architecture.
@@ -213,11 +212,6 @@ The file `config.py` defines all the environment variables required.
 
 ## Using torch profiler
 Details on the environment variables suggested in `.env.example` can be found [here](https://docs.pytorch.org/tutorials/recipes/recipes/profiler_recipe.html).
-
-If using tensorboard, in a different shell start:
-```bash
-tensorboard --logdir <LOG_PATH> --bind_all
-```
 
 ## Run tests
 From the root folder:

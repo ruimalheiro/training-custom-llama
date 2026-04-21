@@ -4,7 +4,6 @@ import json
 
 from torch import nn
 from dataclasses import dataclass
-from types import SimpleNamespace
 from kv_cache import KVCache
 
 
@@ -33,9 +32,6 @@ class ModelConfig:
     moe_z_loss_coef: float = None
     moe_compute_stats: bool = False
 
-    def __repr__(self):
-        return json.dumps(self.to_dict(), indent=4)
-
     def to_dict(self):
         return {
             'dim': self.dim,
@@ -59,6 +55,9 @@ class ModelConfig:
             'moe_z_loss_coef': self.moe_z_loss_coef,
             'moe_compute_stats': self.moe_compute_stats
         }
+
+    def __repr__(self):
+        return json.dumps(self.to_dict(), indent=4)
 
 def precompute_rope_freqs(head_dim, sequence_length, theta=10000.0, device='cpu', dtype=torch.float32):
     ''' Computes the frequencies that will be used for rope (rotary positional ebedding). Without complex numbers.
@@ -410,45 +409,20 @@ class Transformer(nn.Module):
 
         self.register_buffer('rope_freqs', rope_freqs, persistent=False)
 
-    def build_optimizer_param_groups(self, weight_decay, lora_weight_decay=0.0, freeze_non_lora=True):
-        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+    def get_input_embeddings(self):
+        return self.tok_embeddings
 
-        lora_names = [n for n in param_dict if n.endswith('.A') or n.endswith('.B')]
-        lora_params = [param_dict[n] for n in lora_names]
+    def get_output_embeddings(self):
+        return self.output
 
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2 and n not in lora_names]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2 and n not in lora_names]
+    def get_total_parameters_count(self):
+        return sum(p.numel() for p in self.parameters())
 
-        # disable optimization for other params if lora is set:
-        if lora_params:
-            if freeze_non_lora:
-                for p in decay_params + nodecay_params:
-                    p.requires_grad_(False)
+    def get_trainable_parameters_count(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad) 
 
-            optimizer_groups = [
-                {'params': lora_params, 'weight_decay': lora_weight_decay}
-            ]
-        else:
-            optimizer_groups = [
-                {'params': decay_params, 'weight_decay': weight_decay},
-                {'params': nodecay_params, 'weight_decay': 0.0}
-            ]
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        num_lora_params = sum(p.numel() for p in lora_params)
-
-        total_trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-
-        return SimpleNamespace(
-            optimizer_groups=optimizer_groups,
-            decay_params=decay_params,
-            num_decay_params=num_decay_params,
-            nodecay_params=nodecay_params,
-            num_nodecay_params=num_nodecay_params,
-            lora_params=lora_params,
-            num_lora_params=num_lora_params,
-            total_trainable_params=total_trainable_params
-        )
+    def get_named_trainable_parameters(self):
+        return [(n, p) for n, p in self.named_parameters() if p.requires_grad]
 
     def set_moe_stats(self, enabled):
         for m in self.modules():

@@ -2,6 +2,7 @@ import torch
 
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
+from abc import ABC
 
 
 @dataclass
@@ -13,6 +14,10 @@ class TaskStepOutput:
     console_logs: list[str] = field(default_factory=list)
     metrics: Dict[str, Any] = field(default_factory=dict)
 
+@dataclass
+class TaskAssets(ABC):
+    pass
+
 class BaseTask:
     name: str = 'base'
 
@@ -22,9 +27,15 @@ class BaseTask:
         self.ctx = ctx
         return self
 
-    def train_micro_step(self, model, batch) -> TaskStepOutput:
+    def build_assets(self, tokenizer, model) -> TaskAssets:
+        return TaskAssets()
+
+    def move_assets_to_device(self, assets: TaskAssets) -> TaskAssets:
+        return assets
+
+    def train_micro_step(self, model, batch, assets: TaskAssets) -> TaskStepOutput:
         raise NotImplementedError
 
     @torch.no_grad()
-    def validation_step(self, model, batch) -> TaskStepOutput:
+    def validation_step(self, model, batch, assets: TaskAssets) -> TaskStepOutput:
         raise NotImplementedError

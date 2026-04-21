@@ -35,7 +35,7 @@ def model_has_lora(model):
 
 def apply_lora(
     model,
-    device,
+    device='cpu',
     target_modules=('wq', 'wk', 'wv', 'wo', 'w1', 'w3'),
     rank=16,
     alpha=8,
@@ -71,3 +71,11 @@ def apply_lora(
         print(f'- rank: {rank}')
         print(f'- alpha: {alpha}')
         print(f'- dropout: {dropout}')
+
+def is_lora_parameter_name(name):
+    return name.endswith('.A') or name.endswith('.B')
+
+def freeze_non_lora_parameters(model):
+    for name, p in model.get_named_trainable_parameters():
+        if p.requires_grad and not is_lora_parameter_name(name):
+            p.requires_grad_(False)
