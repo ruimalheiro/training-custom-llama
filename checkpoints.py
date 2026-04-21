@@ -28,7 +28,7 @@ def state_to_cpu(obj):
         return t(state_to_cpu(v) for v in obj)
     return obj
 
-def manage_checkpoints(directory, max_files, pbar=None):
+def manage_checkpoints(directory, max_files, step, pbar=None):
     # List all checkpoint files
     checkpoints = [os.path.join(directory, file) for file in os.listdir(directory) if file.startswith('model_')]
     # Extract steps from filenames and pair them
@@ -45,7 +45,7 @@ def manage_checkpoints(directory, max_files, pbar=None):
         for step, file in steps_files:
             if step < cutoff_step:
                 os.remove(file)
-                logger.info(f'Deleted old checkpoint: {file}', pbar)
+                logger.info(f'{step:4d} | deleted old checkpoint: {file}', pbar=pbar)
 
 def save_checkpoint(
     checkpoint_dir,
@@ -109,9 +109,9 @@ def save_checkpoint(
         }
 
         torch.save(checkpoint, checkpoint_path)
-        logger.info(f'Saved checkpoint: {checkpoint_path}', pbar)
+        logger.info(f'{step:4d} | saved checkpoint: {checkpoint_path}', pbar=pbar)
 
-        manage_checkpoints(checkpoint_dir, max_files=max_number_checkpoints, pbar=pbar)
+        manage_checkpoints(directory=checkpoint_dir, max_files=max_number_checkpoints, step=step, pbar=pbar)
 
 @dataclass
 class CheckpointData:

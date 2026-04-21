@@ -832,8 +832,11 @@ class Trainer:
 
         if math.isinf(self.trainer_state.best_val_loss):
             # Do not save until we have at least one validation result.
+            msg = logger.warning_wrapper('skipping checkpointing as validation step was not performed yet.')
+            logger.info(f'{self.trainer_state.current_step:4d} | {msg}', pbar=pbar)
             return
 
+        logger.info(f'{self.trainer_state.current_step:4d} | saving checkpoint...', pbar=pbar)
         save_checkpoint(
             self.config.save_checkpoints_path,
             get_model(self.model),
@@ -852,7 +855,7 @@ class Trainer:
             },
             self.config.max_number_checkpoints,
             self.distributed_ctx.is_master_process,
-            pbar
+            pbar=pbar
         )
 
     @torch.inference_mode()
