@@ -144,7 +144,6 @@ class CheckpointData:
 def load_checkpoint(
     checkpoint_dir,
     checkpoint,
-    reset_optimizers=False,
     is_master_process=True
 ):
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint)
@@ -157,13 +156,11 @@ def load_checkpoint(
     model_state = state['model']
     assert type(model_state) in {OrderedDict, dict}
 
-    optimizers_state = None
-    if not reset_optimizers:
-        optimizers_state = state['optimizers']
-        if optimizers_state['adamw']:
-            assert type(optimizers_state['adamw']) == dict
-        if optimizers_state['muon']:
-            assert type(optimizers_state['muon']) == dict
+    optimizers_state = state['optimizers']
+    if optimizers_state['adamw']:
+        assert type(optimizers_state['adamw']) == dict
+    if optimizers_state['muon']:
+        assert type(optimizers_state['muon']) == dict
 
     train_dl_state = state.get('train_dl', None)
     val_dl_state = state.get('val_dl',   None)

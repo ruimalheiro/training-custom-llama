@@ -355,7 +355,6 @@ class Trainer:
         checkpoint_data = load_checkpoint(
             path,
             name,
-            reset_optimizers=args.reset_optimizers,
             is_master_process=self.distributed_ctx.is_master_process
         )
 
@@ -366,20 +365,23 @@ class Trainer:
         ddp_world_size_changed = (
             checkpoint_data.metadata.get('ddp_world_size', None) != self.distributed_ctx.ddp_world_size
         )
-        if ddp_world_size_changed and checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
-            logger.warn('ignoring stored metadata for dataloaders due to change in ddp world size...')
-            checkpoint_data.train_loader_state = None
-            checkpoint_data.val_loader_state = None
+
+        if args.reset_optimizers:
+            logger.warn('Reset optimizers flag was set')
 
         if training_stage_changed:
             logger.warn('Training stage has changed')
             if checkpoint_data.resume_step:
                 logger.warn('ignoring stored resume step...')
                 checkpoint_data.resume_step=0
+
+        if ddp_world_size_changed or training_stage_changed:
             if checkpoint_data.train_loader_state is not None and checkpoint_data.val_loader_state is not None:
                 logger.warn('ignoring stored metadata for dataloaders...')
                 checkpoint_data.train_loader_state = None
                 checkpoint_data.val_loader_state = None
+
+        if training_stage_changed or args.reset_optimizers:
             if checkpoint_data.optimizers_state is not None:
                 logger.warn('ignoring stored state of optimizer(s)...')
                 checkpoint_data.optimizers_state = None
@@ -387,7 +389,6 @@ class Trainer:
                 logger.warn('ignoring stored last val loss and best val loss...')
                 checkpoint_data.last_val_loss = float('inf')
                 checkpoint_data.best_val_loss = float('inf')
-            logger.info('\n')
         
         self.checkpoint_data = checkpoint_data
 
@@ -492,9 +493,8 @@ class Trainer:
         if self.checkpoint_data:
             self.trainer_state.start_step = self.checkpoint_data.resume_step if self.args.start_step is None else self.args.start_step
             self.trainer_state.current_step = self.checkpoint_data.resume_step if self.args.start_step is None else self.args.start_step
-            if not self.args.reset_optimizers:
-                self.trainer_state.last_val_loss = self.checkpoint_data.last_val_loss
-                self.trainer_state.best_val_loss = self.checkpoint_data.best_val_loss
+            self.trainer_state.last_val_loss = self.checkpoint_data.last_val_loss
+            self.trainer_state.best_val_loss = self.checkpoint_data.best_val_loss
         else:
             self.trainer_state.start_step = 0 if self.args.start_step is None else self.args.start_step
             self.trainer_state.current_step = 0 if self.args.start_step is None else self.args.start_step
