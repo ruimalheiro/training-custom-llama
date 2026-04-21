@@ -598,10 +598,7 @@ class Trainer:
         return (step > 0 and step % every == 0) or (run_last_step and last_step)
 
     def clip_grad_norm(self, model, max_norm):
-        if self.config.use_fsdp:
-            norm = model.clip_grad_norm_(max_norm)
-        else:
-            norm = clip_grad_norm_(model.parameters(), max_norm)
+        norm = clip_grad_norm_(model.parameters(), max_norm)
         if isinstance(norm, DTensor):
             return norm.to_local()
         return norm
