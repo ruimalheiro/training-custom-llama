@@ -91,8 +91,9 @@ class Trainer:
         self.device_ctx = None
         self.precision_ctx = None
         self.trainer_ctx = None
-        self.test_generation_prompts = None
         self.hellaswag_data = None
+        self.winogrande_data = None
+        self.test_generation_prompts = None
         self.tokenizer = None
         self.model_config = None
         self.model = None
@@ -155,9 +156,16 @@ class Trainer:
         self.build_precision_context()
         self.build_trainer_context()
 
-    def load_assets(self):
-        self.load_test_generation_prompts()
+    def load_eval_assets(self):
         self.load_hellaswag_eval_data()
+        self.load_winogrande_eval_data()
+
+    def load_generation_assets(self):
+        self.load_test_generation_prompts()
+
+    def load_assets(self):
+        self.load_eval_assets()
+        self.load_generation_assets()
 
     def build_components(self):
         self.build_tokenizer()
@@ -274,6 +282,11 @@ class Trainer:
             self.distributed_ctx.is_master_process,
             size=self.config.hellaswag_number_of_examples
         )
+
+    def load_winogrande_eval_data(self):
+        if self.config.winogrande_every_x_steps <= 0 or self.config.training_stage != TrainingStage.PRETRAIN:
+            return
+        pass
     
     def build_tokenizer(self):
         self.tokenizer = init_tokenizer(self.config.tokenizer_checkpoint_path, self.config.huggingface_tokenizer)
@@ -773,7 +786,7 @@ class Trainer:
         self.model.eval()
         self.prepare_moe_metrics()
 
-        for _ in tqdm(range(self.config.val_steps), 'Validating', disable=not is_master_process, leave=False):
+        for _ in tqdm(range(self.config.validation_steps), 'Validating', disable=not is_master_process, leave=False):
             output = self.task.validation_step(self.model, self.val_loader.next_batch(), self.task_assets)
             loss = output.loss
             n_valid = output.n_valid

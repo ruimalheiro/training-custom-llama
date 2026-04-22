@@ -45,7 +45,7 @@ def prepare_workload_summary(
             'steps_needed_for_target': steps_needed,
             'tokens_per_step': tokens_per_step,
             'tokens_processed_this_run': tokens_coverage,
-            'dataset_fraction_processed': dataset_fraction,
+            'dataset_coverage_ratio': round(dataset_fraction, 2),
             'max_steps_covers_heuristic': (trainer_state.max_steps >= steps_needed)
         }
     else:

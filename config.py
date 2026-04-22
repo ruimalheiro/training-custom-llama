@@ -53,7 +53,10 @@ class TrainConfig(BaseSettings):
     pretrain_dataloader_root_path: str = Field(alias='PRETRAIN_DATALOADER_ROOT_PATH')
     instruct_dataloader_root_path: str = Field(alias='INSTRUCT_DATALOADER_ROOT_PATH')
     dpo_dataloader_root_path: str = Field(alias='DPO_DATALOADER_ROOT_PATH')
+
+    # paths for eval datasets
     hellaswag_path: str = Field(alias='HELLASWAG_PATH')
+    winogrande_path: str = Field(alias='WINOGRANDE_PATH')
 
     # system prompt
     system_prompt: str = Field(default='You are a helpful AI assistant', alias='SYSTEM_PROMPT')
@@ -122,14 +125,18 @@ class TrainConfig(BaseSettings):
 
     # validation
     validate_every_x_steps: int = Field(alias='VALIDATE_EVERY_X_STEPS')
-    val_steps: int = Field(alias='VAL_STEPS')
+    validation_steps: int = Field(alias='VALIDATION_STEPS')
+
+    # evals
     hellaswag_every_x_steps: int = Field(alias='HELLASWAG_EVERY_X_STEPS')
     hellaswag_number_of_examples: int = Field(alias='HELLASWAG_NUMBER_OF_EXAMPLES')
+    winogrande_every_x_steps: int = Field(alias='WINOGRANDE_EVERY_X_STEPS')
+    winogrande_number_of_examples: int = Field(alias='WINOGRANDE_NUMBER_OF_EXAMPLES')
+
+    # generation
+    test_prompts_path: str = Field(alias='TEST_PROMPTS_FILE')
     generate_every_x_steps: int = Field(alias='GENERATE_EVERY_X_STEPS')
     max_test_gen_len: int = Field(alias='MAX_TEST_GEN_LEN')
-
-    # test prompts
-    test_prompts_path: str = Field(alias='TEST_PROMPTS_FILE')
 
     # model architecture config
     dim: int = Field(default=768, alias='DIM')
@@ -209,6 +216,9 @@ class TrainConfig(BaseSettings):
             },
             'eval_data': {
                 'hellaswag_path': data['hellaswag_path'],
+                'winogrande_path': data['winogrande_path']
+            },
+            'generation_data': {
                 'test_prompts_path': data['test_prompts_path']
             },
             'dataloaders': {
@@ -287,9 +297,13 @@ class TrainConfig(BaseSettings):
             },
             'validation_config': {
                 'validate_every_x_steps': data['validate_every_x_steps'],
-                'val_steps': data['val_steps'],
+                'validation_steps': data['validation_steps']
+            },
+            'eval_config': {
                 'hellaswag_every_x_steps': data['hellaswag_every_x_steps'],
-                'hellaswag_number_of_examples': data['hellaswag_number_of_examples']
+                'hellaswag_number_of_examples': data['hellaswag_number_of_examples'],
+                'winogrande_every_x_steps': data['winogrande_every_x_steps'],
+                'winogrande_number_of_examples': data['winogrande_number_of_examples']
             },
             'generation_config': {
                 'generate_every_x_steps': data['generate_every_x_steps'],

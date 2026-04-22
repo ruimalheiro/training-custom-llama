@@ -35,7 +35,8 @@ The model implementation was originally based on the Llama 3 architecture but la
 - Weights & Biases (W&B) integration
 - Early stopping
 - Gradient accumulation
-- HellaSwag evaluation for pre-training
+- Evals
+  - HellaSwag and Winogrande evaluation for pre-training
 - LoRA configuration
 - Direct Preference Optimization (DPO)
 - Torch profiler
