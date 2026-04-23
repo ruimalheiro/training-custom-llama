@@ -45,7 +45,7 @@ def prepare_workload_summary(
             'steps_needed_for_target': steps_needed,
             'tokens_per_step': tokens_per_step,
             'tokens_processed_this_run': tokens_coverage,
-            'dataset_fraction_processed': dataset_fraction,
+            'dataset_coverage_ratio': round(dataset_fraction, 2),
             'max_steps_covers_heuristic': (trainer_state.max_steps >= steps_needed)
         }
     else:
@@ -177,22 +177,33 @@ def prepare_val_step_no_improve_log(
 
     return console_logs
 
-def prepare_hellaswag_log(
+def get_multiple_choice_log_labels(step_metrics: StepMetrics):
+    """ Gets console log and wandb labels"""
+    if step_metrics.step_type == StepType.HELLASWAG:
+        return 'hellaswag', 'HellaSwag'
+    elif step_metrics.step_type == StepType.WINOGRANDE:
+        return 'winogrande', 'WinoGrande'
+    else:
+        raise ValueError(f'Invalid step type for multiple choice labels: {step_metrics.step_type.value}')
+
+def prepare_multiple_choice_log(
     *,
     step_metrics: StepMetrics,
     trainer_state: TrainerState
 ):
-    if step_metrics.step_type != StepType.HELLASWAG:
+    if step_metrics.step_type not in (StepType.HELLASWAG, StepType.WINOGRANDE,):
         raise ValueError(f'Invalid step type for logging: {step_metrics.step_type.value}')
+
+    console_log_label, wandb_label = get_multiple_choice_log_labels(step_metrics)
 
     step = trainer_state.current_step
 
     console_log = (
         f'{step:4d} | '
-        f'hellaswag accuracy: {step_metrics.accuracy:.4f}'
+        f'{console_log_label} accuracy: {step_metrics.accuracy:.4f}'
     )
 
-    wandb_metrics = {'HellaSwag accuracy': step_metrics.accuracy}
+    wandb_metrics = {f'{wandb_label} accuracy': step_metrics.accuracy}
     console_logs = [console_log]
 
     return console_logs, wandb_metrics

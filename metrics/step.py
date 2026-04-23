@@ -6,6 +6,7 @@ class StepType(str, Enum):
     TRAIN = 'train'
     VAL = 'val'
     HELLASWAG = 'hellaswag'
+    WINOGRANDE = 'winogrande'
 
 @dataclass(frozen=True)
 class StepMetrics:

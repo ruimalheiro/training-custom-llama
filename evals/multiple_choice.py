@@ -4,33 +4,40 @@ import torch.nn.functional as F
 import torch.distributed as dist
 
 
-def load_hellaswag_file(path, ddp, is_master_process, size=None):
+def load_multiple_choice_eval_file(
+    *,
+    filepath,
+    ddp,
+    is_master_process,
+    num_choices,
+    size=None
+):
     # Loads the file and broadcasts to other ranks
     def prepare_line(line):
         example = json.loads(line)
         return {
             'tokens': torch.tensor(example['tokens'], dtype=torch.long),
             'mask': torch.tensor(example['mask'], dtype=torch.long),
-            'label': int(example['label']),
+            'label_index': int(example['label_index']),
             'valid': True
         }
 
     def create_dummy(shards):
         return {
-            'tokens': torch.zeros_like(shards[0][0]['tokens']) if shards and shards[0] else torch.zeros((4, 2), dtype=torch.long),
-            'mask': torch.ones_like(shards[0][0]['mask'])   if shards and shards[0] else torch.ones((4, 2), dtype=torch.long),
-            'label': -1,
+            'tokens': torch.zeros_like(shards[0][0]['tokens']) if shards and shards[0] else torch.zeros((num_choices, 2), dtype=torch.long),
+            'mask': torch.ones_like(shards[0][0]['mask']) if shards and shards[0] else torch.ones((num_choices, 2), dtype=torch.long),
+            'label_index': -1,
             'valid': False
         }
 
     world_size = dist.get_world_size() if ddp else 1
 
-    shards = None
+    shards = [None]
     if is_master_process:
         # master builds the shards
-        with open(f'{path}/hellaswag_val.jsonl', 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             data = [prepare_line(line) for line in f]
-            if size:
+            if size is not None:
                 data = data[:size]
 
         shard_size = (len(data) + world_size - 1) // world_size
@@ -45,8 +52,6 @@ def load_hellaswag_file(path, ddp, is_master_process, size=None):
             target = shard_size - len(shards[i])
             if target > 0:
                 shards[i].extend(target * [dummy])
-    else:
-        shards = [None]
 
     if ddp:
         # scatter the shards for respective rank
@@ -58,7 +63,7 @@ def load_hellaswag_file(path, ddp, is_master_process, size=None):
 
     return data
 
-def estimate_correct_candidate_selection(tokens, mask, logits):
+def estimate_best_candidate_index_from_logits(tokens, mask, logits):
     # align tokens mask and logits (remove first token in tokens/mask and last logit in logits)
     shift_tokens = (tokens[..., 1:]).contiguous()
     shift_mask = (mask[..., 1:]).contiguous()
@@ -74,11 +79,11 @@ def estimate_correct_candidate_selection(tokens, mask, logits):
     shift_losses = losses.view(tokens.size(0), -1)
 
     # Apply the mask
-    masked_shift_losses = shift_losses.masked_fill(shift_mask == 0, 0)
+    masked_shift_losses = shift_losses.masked_fill(shift_mask == 0, 0.0)
 
     # calculate loss for each candidate completion.
     sum_loss = masked_shift_losses.sum(dim=1)
-    avg_loss = sum_loss / shift_mask.sum(dim=1)
+    avg_loss = sum_loss / shift_mask.sum(dim=1).clamp_min(1)
 
     # Pick the one with lowest loss.
     estimated_correct = avg_loss.argmin().item()

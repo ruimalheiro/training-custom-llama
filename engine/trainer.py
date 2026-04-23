@@ -32,7 +32,7 @@ from engine.logging import (
     prepare_train_step_log,
     prepare_val_step_log,
     prepare_val_step_no_improve_log,
-    prepare_hellaswag_log
+    prepare_multiple_choice_log
 )
 from engine.torch_profiler import (
     init_torch_profiler_context
@@ -48,7 +48,6 @@ from config import (
     TrainingStage,
     TrainingPrecision
 )
-from hellaswag_utils import load_hellaswag_file
 from tokenizer import init_tokenizer
 from model import (
     ModelConfig, 
@@ -79,7 +78,10 @@ from metrics import (
     StepMetrics
 )
 from generate import generate_and_decode
-from hellaswag_utils import estimate_correct_candidate_selection
+from evals import (
+    load_multiple_choice_eval_file,
+    estimate_best_candidate_index_from_logits
+)
 
 
 class Trainer:
@@ -91,8 +93,9 @@ class Trainer:
         self.device_ctx = None
         self.precision_ctx = None
         self.trainer_ctx = None
-        self.test_generation_prompts = None
         self.hellaswag_data = None
+        self.winogrande_data = None
+        self.test_generation_prompts = None
         self.tokenizer = None
         self.model_config = None
         self.model = None
@@ -155,9 +158,16 @@ class Trainer:
         self.build_precision_context()
         self.build_trainer_context()
 
-    def load_assets(self):
-        self.load_test_generation_prompts()
+    def load_eval_assets(self):
         self.load_hellaswag_eval_data()
+        self.load_winogrande_eval_data()
+
+    def load_generation_assets(self):
+        self.load_test_generation_prompts()
+
+    def load_assets(self):
+        self.load_eval_assets()
+        self.load_generation_assets()
 
     def build_components(self):
         self.build_tokenizer()
@@ -268,11 +278,23 @@ class Trainer:
     def load_hellaswag_eval_data(self):
         if self.config.hellaswag_every_x_steps <= 0 or self.config.training_stage != TrainingStage.PRETRAIN:
             return
-        self.hellaswag_data = load_hellaswag_file(
-            self.config.hellaswag_path,
-            self.distributed_ctx.ddp,
-            self.distributed_ctx.is_master_process,
+        self.hellaswag_data = load_multiple_choice_eval_file(
+            filepath=f'{self.config.hellaswag_path}/hellaswag_val.jsonl',
+            ddp=self.distributed_ctx.ddp,
+            is_master_process=self.distributed_ctx.is_master_process,
+            num_choices=4,
             size=self.config.hellaswag_number_of_examples
+        )
+
+    def load_winogrande_eval_data(self):
+        if self.config.winogrande_every_x_steps <= 0 or self.config.training_stage != TrainingStage.PRETRAIN:
+            return
+        self.winogrande_data = load_multiple_choice_eval_file(
+            filepath=f'{self.config.winogrande_path}/winogrande_val.jsonl',
+            ddp=self.distributed_ctx.ddp,
+            is_master_process=self.distributed_ctx.is_master_process,
+            num_choices=2,
+            size=self.config.winogrande_number_of_examples
         )
     
     def build_tokenizer(self):
@@ -579,8 +601,8 @@ class Trainer:
                 moe_metrics=moe_metrics,
                 console_logs=console_logs
             )
-        elif step_metrics.step_type == StepType.HELLASWAG:
-            console_logs, wanb_log = prepare_hellaswag_log(
+        elif step_metrics.step_type == StepType.HELLASWAG or step_metrics.step_type == StepType.WINOGRANDE:
+            console_logs, wanb_log = prepare_multiple_choice_log(
                 step_metrics=step_metrics,
                 trainer_state=self.trainer_state
             )
@@ -773,7 +795,7 @@ class Trainer:
         self.model.eval()
         self.prepare_moe_metrics()
 
-        for _ in tqdm(range(self.config.val_steps), 'Validating', disable=not is_master_process, leave=False):
+        for _ in tqdm(range(self.config.validation_steps), 'Validating', disable=not is_master_process, leave=False):
             output = self.task.validation_step(self.model, self.val_loader.next_batch(), self.task_assets)
             loss = output.loss
             n_valid = output.n_valid
@@ -864,7 +886,7 @@ class Trainer:
         )
 
     @torch.inference_mode()
-    def run_hellaswag_eval(self, pbar):
+    def run_multiple_choice_eval(self, *, pbar, data, tqdm_label: str, step_type: StepType):
         if not self.config.is_pretraining:
             return
         ddp = self.trainer_ctx.distributed.ddp
@@ -878,13 +900,13 @@ class Trainer:
         num_total = 0
         self.model.eval()
         for example in tqdm(
-            self.hellaswag_data,
-            f'{self.trainer_state.current_step:4d} | HellaSwag validation',
+            data,
+            f'{self.trainer_state.current_step:4d} | {tqdm_label}',
             unit=' examples',
             disable=not is_master_process,
             leave=False
         ):
-            tokens, mask, label, valid = example['tokens'], example['mask'], example['label'], example['valid']
+            tokens, mask, label_index, valid = example['tokens'], example['mask'], example['label_index'], example['valid']
             if self.config.use_fsdp and not valid:
                 # Some examples might be dummy in FSDP
                 continue
@@ -895,9 +917,9 @@ class Trainer:
             with torch.autocast(device_type=device_type, dtype=autocast_dtype, enabled=use_autocast):
                 logits = self.model(tokens)['logits']
 
-            predicted_correct = estimate_correct_candidate_selection(tokens, mask, logits)
+            predicted_label_index = estimate_best_candidate_index_from_logits(tokens, mask, logits)
             num_total += 1
-            num_correct_norm += int(predicted_correct == label)
+            num_correct_norm += int(predicted_label_index == label_index)
 
         if ddp:
             num_total = torch.tensor(num_total, dtype=torch.long, device=device)
@@ -908,8 +930,26 @@ class Trainer:
             num_correct_norm = num_correct_norm.item()
         acc_norm = num_correct_norm / num_total
 
-        step_metrics = StepMetrics(step_type=StepType.HELLASWAG, accuracy=acc_norm)
+        step_metrics = StepMetrics(step_type=step_type, accuracy=acc_norm)
         self.log_step_metrics(step_metrics=step_metrics, pbar=pbar)
+
+    @torch.inference_mode()
+    def run_hellaswag_eval(self, pbar):
+        self.run_multiple_choice_eval(
+            pbar=pbar,
+            data=self.hellaswag_data,
+            tqdm_label='HellaSwag validation',
+            step_type=StepType.HELLASWAG
+        )
+
+    @torch.inference_mode()
+    def run_winogrande_eval(self, pbar):
+        self.run_multiple_choice_eval(
+            pbar=pbar,
+            data=self.winogrande_data,
+            tqdm_label='WinoGrande validation',
+            step_type=StepType.WINOGRANDE
+        )
 
     @torch.inference_mode()
     def run_generation(self, pbar):
@@ -943,6 +983,8 @@ class Trainer:
             self.run_save_checkpoint(pbar)
         if self.should_run(step, self.config.hellaswag_every_x_steps, is_last_step):
             self.run_hellaswag_eval(pbar)
+        if self.should_run(step, self.config.winogrande_every_x_steps, is_last_step):
+            self.run_winogrande_eval(pbar)
         if self.should_run(step, self.config.generate_every_x_steps, is_last_step):
             self.run_generation(pbar)
 
