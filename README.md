@@ -49,6 +49,8 @@ The model implementation was originally based on the Llama 3 architecture but la
 - `engine/` Contains the trainer core components.
 - `metrics/` Utilities for metric aggregation.
 - `tasks/` Groups the training tasks.
+- `evals/` Contains the main logic to load eval data and run evaluation.
+  - Multiple choice evals: HellaSwag, WinoGrande.
 - `checkpoints.py` Logic to handle checkpointing.
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
 - `data_preparation_utils.py` Contains logic to process a dataset into multiple shards.
@@ -58,7 +60,6 @@ The model implementation was originally based on the Llama 3 architecture but la
 - `distillation_utils.py` Logic for distillation loss.
 - `dpo_utils.py` Logic for DPO loss.
 - `generate.py` Logic for sampling and text generation.
-- `hellaswag_utils.py` Contains the main logic to iterate, process and evaluate HellaSwag examples.
 - The `load_*_dataset.py` files download and prepare datasets for the respective training stage. They load the datasets via `load_dataset` from the `datasets` HF package.
   - Each load script has an associated configuration file:
     - `hf_pretrain_datasets_mix.json`

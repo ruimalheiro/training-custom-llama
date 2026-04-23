@@ -1,19 +1,26 @@
-import requests
+import os
 import json
 import torch
 
 from pathlib import Path
 from tqdm import tqdm
 from config import config
+os.environ['HF_HOME'] = config.hf_home
+os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
+os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
+
 from tokenizer import init_tokenizer
+from data_preparation_utils import get_max_number_of_cpu_processes
+from datasets import load_dataset
 
 
-HELLASWAG_VAL_URL = 'https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl'
+NUMBER_OF_PROCESSES = get_max_number_of_cpu_processes()
 
 CURRENT_DIR = Path(__file__).resolve().parent
 
 DATA_CACHE_DIR = CURRENT_DIR / config.hellaswag_path
 DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+DATA_FILENAME = DATA_CACHE_DIR / 'hellaswag_val.jsonl'
 
 tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
 
@@ -32,7 +39,7 @@ def prepare_example(example):
         }
     """
     context = example['ctx']
-    label = example['label'] # Index for the correct completion
+    label_index = example['label'] # Index for the correct completion
     endings = example['endings'] # Candidates - always 4
 
     context_tokens = tokenizer.encode(context)
@@ -57,50 +64,29 @@ def prepare_example(example):
     mask = torch.zeros((4, max_len), dtype=torch.long)
     for i, (tokens_row, mask_row) in enumerate(zip(tokens_rows, mask_rows)):
         tokens[i, :len(tokens_row)] = torch.tensor(tokens_row, dtype=torch.long)
-        mask[i, :len(mask_row)] = mask_row.clone().detach()
+        mask[i, :len(mask_row)] = mask_row
 
-    return tokens, mask, label
+    processed_example = {
+        'tokens': tokens.tolist(),
+        'mask': mask.tolist(),
+        'label_index': label_index
+    }
 
-#### DOWNLOAD_DATA
-TEMP_FILE_DIR = DATA_CACHE_DIR / 'temp'
-TEMP_FILE_DIR.mkdir(parents=True, exist_ok=True)
-TEMP_FILE_PATH = TEMP_FILE_DIR / 'hellaswag_val.temp'
-
-if not TEMP_FILE_PATH.exists():
-    print(f'Downloading hellaswag to {TEMP_FILE_PATH}...')
-
-    response = requests.get(HELLASWAG_VAL_URL, stream=True)
-    content_length = int(response.headers.get('content-length', 0))
-
-    pbar = tqdm(total=content_length, desc=f'Downloading...')
-
-    with open(TEMP_FILE_PATH, 'wb') as file:
-        for data in response.iter_content(chunk_size=1024):
-            size = file.write(data)
-            pbar.update(size)
-
-    pbar.close()
-    print('\nDownload complete.')
-else:
-    print(f'temp file already exists: {TEMP_FILE_PATH}...')
-
-#### PREPARATION
-DATA_FILENAME = DATA_CACHE_DIR / 'hellaswag_val.jsonl'
+    return processed_example
 
 if not DATA_FILENAME.exists():
-    with open(TEMP_FILE_PATH, 'r') as file:
-        lines = file.readlines()
+    ds = load_dataset(
+        'Rowan/hellaswag',
+        split='validation',
+        num_proc=NUMBER_OF_PROCESSES,
+        token=config.hf_token
+    )
+
     with open(DATA_FILENAME, 'w', encoding='utf-8') as file:
-        for line in tqdm(lines, 'Preparing examples...'):
-            example = json.loads(line)
-            tokens, mask, label = prepare_example(example)
-            processed_example = {
-                'tokens': tokens.tolist(),
-                'mask': mask.tolist(),
-                'label': label
-            }
+        for example in tqdm(ds, desc='Preparing HellaSwag eval dataset'):
+            processed_example = prepare_example(example)
             json.dump(processed_example, file, ensure_ascii=False)
             file.write('\n')
-    print(f'Hellaswag preprocessing completed and stored at: {DATA_FILENAME}')
+    print(f'HellaSwag preprocessing completed and stored at: {DATA_FILENAME}')
 else:
-    print(f'Hellaswag preprocessed file already exists: {DATA_FILENAME}')
+    print(f'HellaSwag preprocessed file already exists: {DATA_FILENAME}')

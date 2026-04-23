@@ -38,7 +38,7 @@ def prepare_example(example):
     sentence = example['sentence']
     option1 = example['option1'].strip()
     option2 = example['option2'].strip()
-    label = int(example['answer']) - 1
+    label_index = int(example['answer']) - 1
 
     if sentence.count('_') != 1:
         raise ValueError(f'Expected exactly one blank in sentence, got: {sentence}')
@@ -70,7 +70,7 @@ def prepare_example(example):
     processed_example = {
         'tokens': tokens.tolist(),
         'mask': mask.tolist(),
-        'label': label
+        'label_index': label_index
     }
 
     return processed_example
