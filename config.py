@@ -1,3 +1,5 @@
+import os
+
 from pydantic import Field, ConfigDict
 from pydantic_settings import BaseSettings
 from enum import Enum
@@ -182,6 +184,14 @@ class TrainConfig(BaseSettings):
             self.save_checkpoints_path = self.dpo_save_checkpoints_path
         else:
             raise ValueError(f'Invalid training stage: {self.training_stage}')
+
+        self.configure_hf_environment()
+
+    def configure_hf_environment(self) -> None:
+        # Sets default paths for hf
+        os.environ['HF_HOME'] = self.hf_home
+        os.environ['HF_DATASETS_CACHE'] = f'{self.hf_home}/datasets'
+        os.environ['HF_HUB_CACHE'] = f'{self.hf_home}/hub'
 
     def to_summary_dict(self, include_model_config: bool = True) -> dict:
         data = self.model_dump(exclude={'wandb_api_key', 'hf_token'})

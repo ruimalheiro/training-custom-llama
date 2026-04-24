@@ -5,10 +5,6 @@ import torch
 from pathlib import Path
 from tqdm import tqdm
 from config import config
-os.environ['HF_HOME'] = config.hf_home
-os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
-os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
-
 from tokenizer import init_tokenizer
 from data_preparation_utils import get_max_number_of_cpu_processes
 from datasets import load_dataset
