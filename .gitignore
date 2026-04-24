@@ -2,13 +2,15 @@ __pycache__/
 .ipynb_checkpoints/
 cache/
 .env
+env/
 .gradio/
 *.pth
-*.ipynb
 datasets/
-checkpoints*/
-dataset*/
+checkpoints/
 wandb/
+
+# Any local custom files
+local_playground/
 
 # optional extra ignores for local tokenizer assets
 tokenizer.model

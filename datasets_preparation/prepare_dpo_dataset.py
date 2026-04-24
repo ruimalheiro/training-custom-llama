@@ -4,10 +4,6 @@ import re
 import json
 
 from config import config
-os.environ['HF_HOME'] = config.hf_home
-os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
-os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
-
 from tokenizer import init_tokenizer
 from datasets import (
     load_dataset,
