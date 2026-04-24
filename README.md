@@ -1,55 +1,72 @@
-# Llama-based transformer and multi-node / multi-GPU training
+# Gradient Garden
 
-This project implements an LLM in pure PyTorch and includes utilities for data preparation and distributed training across single-node or multi-node GPU setups.
+Gradient Garden is a research playground for model training, evaluation, and experimentation across architectures, benchmarks, and recipes.
 
-This project focuses on the following:
-- Llama-based baseline architecture in pure PyTorch
-  - Additional model architectures may be added in the future.
-- Multi-node / multi-GPU training
-- Multiple training stages (pre-training, SFT, distillation, DPO, etc.)
-- Research and experimentation
+The project began with a Llama-inspired transformer baseline and has evolved into a broader codebase for training, evaluation, and experimentation across modern machine learning models, distributed training workflows, and post-training methods.
 
-**NOTE**: 
-- The project can be adapted for other datasets.
-- By default, the project uses a Hugging Face tokenizer.
-- It also supports a tiktoken-based tokenizer with a configuration similar to Llama 3's tokenizer, but the local BPE/tokenizer file is **not** included in this repository and must be provided separately.
+## Current focus
+- Distributed training and runtime systems
+- Multi-stage model training and post-training workflows
+- Research and experimentation across architectures, benchmarks, and training recipes
 
-## Model
-The model implementation was originally based on the Llama 3 architecture but later diverged due to changes and experimentation. The official project from Meta can be found [here](https://github.com/meta-llama/llama3).
+## Current capabilities
 
-## Supported features in the trainer and config options
-- Multi-node / multi-GPU
-  - Supports either DDP or FSDP2 (~ZeRO3-like sharding)
-- Optimizers
-  - AdamW (fused if available on device)
-  - Muon
-    - AdamW and Muon use separate max LR, min LR, and warmup settings.
-    - Muon is applied to matrix parameters.
-    - AdamW is applied to the remaining trainable parameters.
-    - Separate scheduler settings are available for each optimizer.
-- Pre-training
-- Instruct fine-tuning (SFT)
-- Model distillation
-  - For now, the teacher model is loaded from the *Hugging Face Hub*, but this can be adapted to support other models.
-- Saving / loading checkpoints
-- Weights & Biases (W&B) integration
-- Early stopping
+### Training and distributed execution
+- single-GPU training
+- multi-GPU / multi-node training
+  - DDP
+  - FSDP2 (~ZeRO3-like sharding)
 - Gradient accumulation
-- Evals
-  - HellaSwag and Winogrande evaluation for pre-training
-- LoRA configuration
+- Mixed precision
+  - BF16
+  - FP16
+  - FP32
+- Early stopping
+- Checkpoint save / load / resume
+- Torch profiler integration
+- Weights & Biases (W&B) integration
+
+### Optimization
+- AdamW
+  - Fused if available on the device
+- Muon
+  - Separate max LR, min LR, and warmup settings from AdamW
+  - Applied to matrix parameters
+  - AdamW is applied to the remaining trainable parameters
+- Cosine LR scheduling
+
+### Training workflows
+- Pretraining
+- Supervised fine-tuning (SFT / instruct)
 - Direct Preference Optimization (DPO)
-- Torch profiler
+- Optional distillation support
+  - Teacher models are currently loaded from the Hugging Face Hub, but this can be adapted to other sources if needed
+
+### Model features
+- LoRA
 - Mixture of Experts (MoE)
-  - Uses the existing FF module for the MLPs
-  - Load balancing + z-loss
+  - Reuses the existing FF module for expert MLPs
+  - Includes load balancing and z-loss
 - KV cache for autoregressive decoding
 
-## Instructions
-- `engine/` Contains the trainer core components.
+### Evaluation
+- Shared multiple-choice evaluation path
+  - HellaSwag
+  - WinoGrande
+- Additional benchmarks can be added through the same multiple-choice evaluation flow
+
+## Notes
+- The project is currently focused on CUDA-based training workflows.
+- The initial model implementation was inspired by the Llama family, but the codebase is not intended to stay tied to Llama specifically.
+- The project can be adapted to other datasets and model architectures.
+- By default, the project uses a Hugging Face tokenizer.
+- It also supports a `tiktoken`-based tokenizer with a configuration similar to the Llama 3 tokenizer, but the local BPE/tokenizer file is **not** included in this repository and must be provided separately.
+
+## Project structure
+- `engine/` Trainer and runtime core components.
 - `metrics/` Utilities for metric aggregation.
 - `tasks/` Groups the training tasks.
-- `evals/` Contains the main logic to load eval data and run evaluation.
+- `evals/` Shared evaluation loading and scoring utilities.
   - Multiple choice evals: HellaSwag, WinoGrande.
 - `checkpoints.py` Logic to handle checkpointing.
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
@@ -60,15 +77,16 @@ The model implementation was originally based on the Llama 3 architecture but la
 - `distillation_utils.py` Logic for distillation loss.
 - `dpo_utils.py` Logic for DPO loss.
 - `generate.py` Logic for sampling and text generation.
-- The `load_*_dataset.py` files download and prepare datasets for the respective training stage. They load the datasets via `load_dataset` from the `datasets` HF package.
-  - Each load script has an associated configuration file:
+- The `load_*_dataset.py` files prepare datasets for the currently supported training and evaluation workflows.
+  - Training dataset scripts use the configured dataset mixes and transforms.
     - `hf_pretrain_datasets_mix.json`
     - `hf_instruct_datasets_mix.json`
     - `hf_dpo_datasets_mix.json`
+  - Evaluation dataset scripts prepare the currently supported benchmark files.
 - `logger.py` Simple reusable logger.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` Stores learning rate schedulers. At the moment, it includes a cosine scheduler.
-- `model.py` Implements the custom Llama architecture.
+- `model.py` Current main model implementation.
 - `test_prompts.json` JSON with the list of input prompts to try during training. The expected keys in the JSON (as provided in the file) are "pretrain", "instruct", "dpo".
 - `tokenizer.py` Provides the tokenizer abstraction used by the project and supports two backends:
   - `TikTokenizer`: loads tiktoken BPE weights from a local file path and configures the special tokens used by the project.
@@ -81,28 +99,20 @@ The model implementation was originally based on the Llama 3 architecture but la
 ## Setup
 - Create a python environment. Example with conda: `conda create -n my_env python=3.11`;
 - Activate the environment and run: `pip install -r requirements.txt`;
-- Download and prepare the data (Example pretraining / instruct fine-tuning):
-  - To prepare HellaSwag, run:
-  ```
-  python load_hellaswag_dataset.py
-  ```
-  - For the pretraining dataset run: 
-  ```
-  python load_pretrain_dataset.py
-  ```
-  - For the instruction dataset run: 
-  ```
-  python load_instruct_dataset.py
-  ```
-    - **NOTE**: Both `load_pretrain_dataset` and `load_instruct_dataset` expect the dataset structure to be in a particular format and should be modified as necessary. (E.g.: If using different datasets). For example the instruct dataset expects the chat format.
-    All the target paths can be modified in the `.env` file. (Check config.py for more details.)
+- Download and prepare the data:
+  - HellaSwag: `python load_hellaswag_dataset.py`
+  - WinoGrande: `python load_winogrande_dataset.py`
+  - pretraining: `python load_pretrain_dataset.py`
+  - instruct: `python load_instruct_dataset.py`
+  - dpo: `python load_dpo_dataset.py`
+- **NOTE**: All the target paths can be modified in the `.env` file. (Check config.py for more details.)
   
 - (OPTIONAL) Setup your Weights & Biases API key:
   - Set `WANDB_API_KEY` environment variable if you want to log the progress there.
 
 - **NOTE:** For some scenarios you might need to also pass your Hugging Face API token `HF_TOKEN`. E.g.: If performing knowledge distillation and the teacher model requires access permissions.
 
-## Configuring & Running Training:
+## Configuring and training:
 The project expects a `.env` file to be created. Check `.env.example` and use it as a template.
 The file `config.py` defines all the environment variables required.
 - Modify it according to your experiment needs (e.g., model architecture, hyperparameters, Weights & Biases settings, checkpointing, etc.).
@@ -122,12 +132,12 @@ The file `config.py` defines all the environment variables required.
 **NOTE:** The checkpoint paths need to be set in the `.env` file. See `config.py` for details.
 
 ### Running the Training
-- To train on **Single GPU**, run:
+- To train on **single-GPU**, run:
     ```bash
     python train.py
     ```
 
-- To train on **N GPUs** run:
+- To train on **multi-GPU** run:
     ```bash
     export OMP_NUM_THREADS=1
 
@@ -219,10 +229,10 @@ The file `config.py` defines all the environment variables required.
 - More details on torchrun [here](https://pytorch.org/docs/stable/elastic/run.html)
 - More details on NCCL [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#environment-variables)
 
-## Using torch profiler
+## Using Torch Profiler
 Details on the environment variables suggested in `.env.example` can be found [here](https://docs.pytorch.org/tutorials/recipes/recipes/profiler_recipe.html).
 
-## Run tests
+## Running tests
 From the root folder:
 ```bash
 pytest
@@ -236,11 +246,11 @@ This project is licensed under the Apache License 2.0. See the `LICENSE` file fo
 
 ## Citation
 Please cite this project if it was useful in your work:
-```
-@software{rui2024trainingcustomllama,
+
+```bibtex
+@software{rui2024gradientgarden,
   author = {Rui Malheiro},
-  title = {Llama-based transformer and multi-node / multi-GPU training},
+  title = {Gradient Garden},
   year = {2024},
-  url = {https://github.com/ruimalheiro/training-custom-llama}
+  url = {https://github.com/ruimalheiro/gradient-garden}
 }
-```
