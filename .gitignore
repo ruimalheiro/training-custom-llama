@@ -1,18 +1,30 @@
 __pycache__/
 .ipynb_checkpoints/
 cache/
+
+# Local environment/config files
 .env
+.env.*
+!.env.example
 env/
+
 .gradio/
+
+# Large/generated artifacts
 *.pth
 datasets/
 checkpoints/
 wandb/
 
-# Any local custom files
-local_playground/
+# Local dataset mix recipes
+*.local.json
+*.private.json
 
-# optional extra ignores for local tokenizer assets
+# Local notebooks / experiments
+*.local.ipynb
+*.private.ipynb
+
+# Optional extra ignores for local tokenizer assets
 tokenizer.model
 *.tiktoken
 tea_debug.log

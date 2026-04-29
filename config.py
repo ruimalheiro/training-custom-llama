@@ -26,13 +26,8 @@ class TrainConfig(BaseSettings):
     hf_home: str = Field(default='./cache', alias='HF_HOME')
 
     # datasets
-    pretrain_dataset_mix_file: str = Field(alias='HF_PRETRAIN_DATASET_MIX_FILE')
     pretrain_dataset_target_path: str = Field(alias='HF_PRETRAIN_DATASET_TARGET_PATH')
-
-    instruct_dataset_mix_file: Annotated[str | None, Field(alias='HF_INSTRUCT_DATASET_MIX_FILE')] = None
     instruct_dataset_target_path: str = Field(alias='HF_INSTRUCT_DATASET_TARGET_PATH')
-
-    dpo_dataset_mix_file: Annotated[str | None, Field(alias='HF_DPO_DATASET_MIX_FILE')] = None
     dpo_dataset_target_path: str = Field(alias='HF_DPO_DATASET_TARGET_PATH')
 
     hf_include_source_id: bool = Field(default=False, alias='HF_INCLUDE_SOURCE_ID')
@@ -216,11 +211,8 @@ class TrainConfig(BaseSettings):
                 'torch_profiler_schedule_repeat': data['torch_profiler_schedule_repeat']
             },
             'datasets': {
-                'pretrain_dataset_mix_file': data['pretrain_dataset_mix_file'],
                 'pretrain_dataset_target_path': data['pretrain_dataset_target_path'],
-                'instruct_dataset_mix_file': data['instruct_dataset_mix_file'],
                 'instruct_dataset_target_path': data['instruct_dataset_target_path'],
-                'dpo_dataset_mix_file': data['dpo_dataset_mix_file'],
                 'dpo_dataset_target_path': data['dpo_dataset_target_path'],
                 'hf_include_source_id': data['hf_include_source_id']
             },

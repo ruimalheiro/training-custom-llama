@@ -5,6 +5,7 @@ import numpy as np
 import sys
 import multiprocessing as mp
 import hashlib
+import math
 
 from tqdm import tqdm
 from config import config
@@ -36,25 +37,29 @@ def assert_common_structure_and_extract(datasets_mix, supported_datasets):
 
     # Validate candidates
     valid_datasets = []
-    for dataset in datasets:
-        assert 'id' in dataset
-        assert dataset['id'] in supported_datasets, dataset['id']
-        assert 'split' in dataset
-        assert 'weight' in dataset
-        assert 0.0 <= float(dataset['weight']) <= 1.0
+    for dataset_id, names in datasets.items():
+        assert dataset_id in supported_datasets
 
-        # Get the ones with weight > 0, assume 100% default and include. Only ignore if 0.0 is set
-        weight = dataset.get('weight', 1.0)
-        if weight > 0:
-            valid_datasets.append(dataset)
+        for name in names:
+            assert name in supported_datasets[dataset_id]
+            assert 'weight' in datasets[dataset_id][name]
+            assert 0.0 <= float(datasets[dataset_id][name]['weight']) <= 1.0
+            weight = float(datasets[dataset_id][name].get('weight', 0.0))
+            if weight > 0:
+                valid_datasets.append({
+                    'id': dataset_id,
+                    'name': name,
+                    **datasets[dataset_id][name],
+                    'weight': weight,
+                })
 
     assert valid_datasets, 'No datasets with weight > 0'
 
-    probabilities = [float(ds['weight']) for ds in valid_datasets]
+    probabilities = [ds['weight'] for ds in valid_datasets]
 
     # normalize probabilities
     total_p = sum(probabilities)
-    assert total_p > 0
+    assert math.isclose(total_p, 1.0, rel_tol=1e-9, abs_tol=1e-12), f'weight distribution must add to 1. Currently: {total_p}'
     probabilities = [p / total_p for p in probabilities]
 
     def ds_with_name(ds):
