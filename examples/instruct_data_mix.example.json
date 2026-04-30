@@ -1,0 +1,14 @@
+{
+  "seed": 42,
+  "datasets": {
+    "HuggingFaceH4/ultrachat_200k": {
+      "default": {
+        "weight": 1.0,
+        "transforms": {
+          "max_datapoints": 100,
+          "max_turns": 8
+        }
+      }
+    }
+  }
+}

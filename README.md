@@ -5,7 +5,7 @@ Gradient Garden is a research playground for model training, evaluation, and exp
 The project began with a Llama-inspired transformer baseline and has evolved into a broader codebase for training, evaluation, and experimentation across modern machine learning models, distributed training workflows, and post-training methods.
 
 ## Current focus
-- Distributed training and runtime systems
+- Distributed training
 - Multi-stage model training and post-training workflows
 - Research and experimentation across architectures, benchmarks, and training recipes
 
@@ -63,30 +63,28 @@ The project began with a Llama-inspired transformer baseline and has evolved int
 - It also supports a `tiktoken`-based tokenizer with a configuration similar to the Llama 3 tokenizer, but the local BPE/tokenizer file is **not** included in this repository and must be provided separately.
 
 ## Project structure
+- `datasets_preparation/` Components used for downloading, preparing, and tokenizing datasets.
 - `engine/` Trainer and runtime core components.
-- `metrics/` Utilities for metric aggregation.
-- `tasks/` Groups the training tasks.
 - `evals/` Shared evaluation loading and scoring utilities.
   - Multiple choice evals: HellaSwag, WinoGrande.
+- `examples/` Templates for the `.env` config and dataset mix.
+- `metrics/` Utilities for metric aggregation.
+- `tasks/` Groups the training tasks.
+- `tests/` Groups tests for different components.
 - `checkpoints.py` Logic to handle checkpointing.
 - `config.py` Defines the main config and environment variables that are to be extracted from `.env`.
-- `data_preparation_utils.py` Contains logic to process a dataset into multiple shards.
 - `dataloaders.py` Dataloader logic for sampling and distributing data.
 - `ddp_utils.py` Contains the main logic to set up the PyTorch DDP (Distributed Data Parallel) and FSDP2 (Fully Sharded Data Parallel).
   - PyTorch DDP [here](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
 - `distillation_utils.py` Logic for distillation loss.
 - `dpo_utils.py` Logic for DPO loss.
 - `generate.py` Logic for sampling and text generation.
-- The `load_*_dataset.py` files prepare datasets for the currently supported training and evaluation workflows.
-  - Training dataset scripts use the configured dataset mixes and transforms.
-    - `hf_pretrain_datasets_mix.json`
-    - `hf_instruct_datasets_mix.json`
-    - `hf_dpo_datasets_mix.json`
-  - Evaluation dataset scripts prepare the currently supported benchmark files.
+- `kv_cache.py` KV cache implementation.
 - `logger.py` Simple reusable logger.
 - `lora.py` LoRA module that handles the model modification. Rank, alpha, dropout and target modules can be configured in the `.env` file.
 - `lr_schedulers.py` Stores learning rate schedulers. At the moment, it includes a cosine scheduler.
 - `model.py` Current main model implementation.
+- `prepare_datasets.py` Entry point for data downloading and preparation.
 - `test_prompts.json` JSON with the list of input prompts to try during training. The expected keys in the JSON (as provided in the file) are "pretrain", "instruct", "dpo".
 - `tokenizer.py` Provides the tokenizer abstraction used by the project and supports two backends:
   - `TikTokenizer`: loads tiktoken BPE weights from a local file path and configures the special tokens used by the project.
@@ -100,12 +98,16 @@ The project began with a Llama-inspired transformer baseline and has evolved int
 - Create a python environment. Example with conda: `conda create -n my_env python=3.11`;
 - Activate the environment and run: `pip install -r requirements.txt`;
 - Download and prepare the data:
-  - HellaSwag: `python load_hellaswag_dataset.py`
-  - WinoGrande: `python load_winogrande_dataset.py`
-  - pretraining: `python load_pretrain_dataset.py`
-  - instruct: `python load_instruct_dataset.py`
-  - dpo: `python load_dpo_dataset.py`
-- **NOTE**: All the target paths can be modified in the `.env` file. (Check config.py for more details.)
+  - Evals:
+    - HellaSwag: `python prepare_datasets.py --hellaswag`
+    - WinoGrande: `python prepare_datasets.py --winogrande`
+  - Training and validation:
+    - pretraining: `python prepare_datasets.py --pretraining`
+    - instruct: `python prepare_datasets.py --instruct`
+    - dpo: `python prepare_datasets.py --dpo`
+  - **NOTE**: All the target paths can be modified in the `.env` file. (Check config.py for more details.)
+  - The training dataset preparation commands also support a custom mix file by passing `--mix-file <file_path>`. Check `examples/pretraining_data_mix.example.json` for an example. Local custom mix files should use the `.local.json` suffix, for example `pretraining_debug.local.json`, so they are ignored by Git. If no `--mix-file` is provided, the built-in default mix for that stage is used.
+    - The default mix can be found in `datasets_preparation/default_mixes.py`
   
 - (OPTIONAL) Setup your Weights & Biases API key:
   - Set `WANDB_API_KEY` environment variable if you want to log the progress there.
@@ -113,11 +115,11 @@ The project began with a Llama-inspired transformer baseline and has evolved int
 - **NOTE:** For some scenarios you might need to also pass your Hugging Face API token `HF_TOKEN`. E.g.: If performing knowledge distillation and the teacher model requires access permissions.
 
 ## Configuring and training:
-The project expects a `.env` file to be created. Check `.env.example` and use it as a template.
+The project expects a `.env` file at the repository root. Check `examples/.env.example` and use it as a template.
 The file `config.py` defines all the environment variables required.
 - Modify it according to your experiment needs (e.g., model architecture, hyperparameters, Weights & Biases settings, checkpointing, etc.).
 
-**NOTE:** Values in `.env` override **all** defaults in `config.py`.
+**NOTE:** Values in `.env` override the corresponding defaults defined in `config.py`.
 
 ### Common flags
 `train.py` accepts some flags that are useful to load a checkpoint or override some properties:
@@ -230,13 +232,16 @@ The file `config.py` defines all the environment variables required.
 - More details on NCCL [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#environment-variables)
 
 ## Using Torch Profiler
-Details on the environment variables suggested in `.env.example` can be found [here](https://docs.pytorch.org/tutorials/recipes/recipes/profiler_recipe.html).
+Details on the environment variables suggested in `examples/.env.example` can be found [here](https://docs.pytorch.org/tutorials/recipes/recipes/profiler_recipe.html).
 
 ## Running tests
 From the root folder:
 ```bash
 pytest
 ```
+
+## Contributions
+Feel free to reach out if interested in contributing!
 
 ## Third-party assets and licenses
 Tokenizer files, model weights, and datasets obtained from third parties are **not** included in this repository unless explicitly stated, and may be subject to their own licenses and terms.
@@ -254,3 +259,4 @@ Please cite this project if it was useful in your work:
   year = {2024},
   url = {https://github.com/ruimalheiro/gradient-garden}
 }
+```

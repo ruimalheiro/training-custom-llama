@@ -2,10 +2,6 @@ import tiktoken
 import os
 
 from config import config
-os.environ['HF_HOME'] = config.hf_home
-os.environ['HF_DATASETS_CACHE'] = f'{config.hf_home}/datasets'
-os.environ['HF_HUB_CACHE'] = f'{config.hf_home}/hub'
-
 from abc import ABC, abstractmethod
 from typing import Iterable, List
 from pathlib import Path
