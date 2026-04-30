@@ -43,7 +43,7 @@ def assert_common_structure_and_extract(datasets_mix, supported_datasets):
         for name in names:
             assert name in supported_datasets[dataset_id]
             assert 'weight' in datasets[dataset_id][name]
-            assert 0.0 <= float(datasets[dataset_id][name]['weight']) <= 1.0
+            assert 0.0 <= float(datasets[dataset_id][name]['weight']) <= 1.0, 'weight must be a value between 0 and 1.'
             weight = float(datasets[dataset_id][name].get('weight', 0.0))
             if weight > 0:
                 valid_datasets.append({

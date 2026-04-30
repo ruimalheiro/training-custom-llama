@@ -1,2 +1,3 @@
 from datasets_preparation.prepare_pretraining_dataset import prepare_pretraining_dataset
 from datasets_preparation.prepare_instruct_dataset import prepare_instruct_dataset
+from datasets_preparation.prepare_dpo_dataset import prepare_dpo_dataset

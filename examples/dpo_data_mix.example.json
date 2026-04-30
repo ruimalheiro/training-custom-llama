@@ -1,0 +1,13 @@
+{
+    "seed": 42,
+    "datasets": {
+        "Anthropic/hh-rlhf": {
+            "default": {
+                "weight": 1.0,
+                "transforms": {
+                    "max_datapoints": 100
+                }
+            }
+        }
+    }
+}

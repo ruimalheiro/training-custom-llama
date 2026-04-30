@@ -60,3 +60,15 @@ DEFAULT_INSTRUCT_MIX = {
         }
     }
 }
+
+DEFAULT_DPO_MIX = {
+    'seed': 42,
+    'datasets': {
+        'Anthropic/hh-rlhf': {
+            'default': {
+                'weight': 1.0,
+                'transforms': {}
+            }
+        }
+    }
+}
