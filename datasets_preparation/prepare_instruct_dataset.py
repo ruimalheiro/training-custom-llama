@@ -1,8 +1,9 @@
 import os
 import numpy as np
-import json
 import re
 import random
+import copy
+import time
 
 from config import config
 from tokenizer import init_tokenizer
@@ -10,30 +11,23 @@ from datasets import (
     load_dataset,
     interleave_datasets
 )
-from data_preparation_utils import (
+from datasets_preparation.data_preparation_utils import (
     stable_hash,
     get_max_number_of_cpu_processes,
     assert_common_structure_and_extract
 )
+from datasets_preparation.default_mixes import DEFAULT_INSTRUCT_MIX
 
-
-NUMBER_OF_PROCESSES = get_max_number_of_cpu_processes()
-
-#### SUPPORTED DATASETS
-SUPPORTED_HF_DATASETS = [
-    'HuggingFaceH4/ultrachat_200k',
-    'lmsys/lmsys-chat-1m'
-]
 
 #### ADAPTERS
-def adapt_ultrachat_200k(doc, transforms):
+def adapt_ultrachat_200k(doc, transforms, seed):
     messages = doc['messages']
     conversation = []
     for message in messages:
         conversation.append({'role': message['role'], 'content': message['content']})
     return conversation
 
-def adapt_lmsys_chat_1m(doc, transforms):
+def adapt_lmsys_chat_1m(doc, transforms, seed):
     messages = doc['conversation']
     replace = False
     name_mapping = None
@@ -68,17 +62,24 @@ def adapt_lmsys_chat_1m(doc, transforms):
         conversation.append({'role': message['role'], 'content': content})
     return conversation
 
-ADAPTERS_MAP = {
-    'HuggingFaceH4/ultrachat_200k': adapt_ultrachat_200k,
-    'lmsys/lmsys-chat-1m': adapt_lmsys_chat_1m
+#### SUPPORTED DATASETS
+SUPPORTED_HF_DATASETS = {
+    'HuggingFaceH4/ultrachat_200k': {
+        'default': {
+            'id': 'HuggingFaceH4/ultrachat_200k',
+            'split': 'train_sft',
+            'adapter': adapt_ultrachat_200k
+        }
+    },
+    'lmsys/lmsys-chat-1m': {
+        'default': {
+            'id': 'lmsys/lmsys-chat-1m',
+            'split': 'train',
+            'adapter': adapt_lmsys_chat_1m
+        }
+    }
 }
 
-#### VERIFY MIX FILE STRUCTURE
-datasets_mix = json.load(open(config.instruct_dataset_mix_file))
-
-seed, valid_datasets, probabilities = assert_common_structure_and_extract(datasets_mix, SUPPORTED_HF_DATASETS)
-
-#### PREPARATION
 def ensure_user_first(conversation):
     if not conversation:
         return conversation
@@ -90,12 +91,19 @@ def ensure_user_first(conversation):
 def has_assistant_content(conversation):
     return any(message['role'] == 'assistant' and message['content'].strip() for message in conversation)
 
-tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
-SYS = tokenizer.encode('system')
-SYS_PROMPT = tokenizer.encode('\n' + config.system_prompt)
-NL = tokenizer.encode('\n')
+tokenizer = None
+SYS = None
+SYS_PROMPT = None
+NL = None
 
 def tokenize(doc):
+    global tokenizer, SYS, SYS_PROMPT, NL
+    if tokenizer is None:
+        tokenizer = init_tokenizer(config.tokenizer_checkpoint_path, config.huggingface_tokenizer)
+        SYS = tokenizer.encode('system')
+        SYS_PROMPT = tokenizer.encode('\n' + config.system_prompt)
+        NL = tokenizer.encode('\n')
+
     bot = tokenizer.bos_id
     sh = tokenizer.sh_id
     eh = tokenizer.eh_id
@@ -125,71 +133,112 @@ def tokenize(doc):
         push([eh], False)
         push(NL, False)
         push(tokenizer.encode(content), role == 'assistant')
-        push([eot], False)
+        push([eot], role == 'assistant')
 
     input_ids = np.array(tokens, dtype=np.uint32)
     labels = np.array(labels[1:] + [config.ignore_index], dtype=np.int32)
 
     return { 'input_ids': input_ids, 'labels': labels }
 
-prepared_datasets = []
-for dataset in valid_datasets:
-    ds_id = dataset['id']
-    name = dataset.get('name', None)
+def download_and_prepare_data(
+    *,
+    seed,
+    valid_datasets,
+    probabilities,
+    number_of_processes
+):
+    prepared_datasets = []
+    for dataset in valid_datasets:
+        ds_id = dataset['id']
+        name = dataset.get('name', None)
 
-    adapter_id = f'{ds_id}_{name}' if name and name != 'default' else ds_id
+        dataset_config = SUPPORTED_HF_DATASETS[ds_id][name]
+        split = dataset_config['split']
+        adapter = dataset_config['adapter']
 
-    split = dataset['split']
-    transforms = dataset.get('transforms', {})
+        transforms = dataset.get('transforms', {})
 
-    max_datapoints = transforms.get('max_datapoints', None)
-    max_turns = transforms.get('max_turns', 8)
+        max_datapoints = transforms.get('max_datapoints', None)
+        max_turns = transforms.get('max_turns', 8)
 
-    ds = load_dataset(
-        ds_id,
-        name=name,
-        split=split,
-        num_proc=NUMBER_OF_PROCESSES,
-        token=config.hf_token
+        hf_name = None if name == 'default' else name
+
+        ds = load_dataset(
+            ds_id,
+            name=hf_name,
+            split=split,
+            num_proc=number_of_processes,
+            token=config.hf_token
+        )
+
+        if max_datapoints:
+            max_datapoints = int(max_datapoints)
+            ds = ds.select(range(max_datapoints))
+
+        def normalize(doc):
+            conversation = adapter(doc, transforms, seed)
+            conversation = ensure_user_first(conversation)
+            conversation = conversation[:max_turns]
+
+            result = {'conversation': []}
+            if config.hf_include_source_id:
+                result['source'] = ds_id
+
+            if not has_assistant_content(conversation):
+                return result
+
+            result['conversation'] = conversation
+            return result
+
+        ds = ds.map(normalize, num_proc=number_of_processes)
+        ds = ds.filter(lambda x: len(x['conversation']) > 0, num_proc=number_of_processes)
+
+        columns_to_remove = [c for c in ds.column_names if c not in ['source']]
+        tokenized_ds = ds.map(tokenize, num_proc=number_of_processes, remove_columns=columns_to_remove)
+
+        prepared_datasets.append(tokenized_ds)
+
+    if len(prepared_datasets) > 1:
+        print('Preparing Interleaving iterator... This operation can take a few minutes...')
+        prepared_dataset = interleave_datasets(
+            prepared_datasets,
+            probabilities=probabilities,
+            seed=seed
+        )
+        time.sleep(2) # Workaround for occasional streaming/interleave iterator shutdown issue.
+        print('Interleaving datasets complete')
+    else:
+        prepared_dataset = prepared_datasets[0]
+
+    print('Summary:')
+    for d, ds in zip(valid_datasets, prepared_datasets):
+        print(f'- Total for: {d["id"]} : {len(ds)}')
+
+    print('- Mix total len:', len(prepared_dataset))
+
+    splits = prepared_dataset.train_test_split(test_size=0.01, seed=seed)
+
+    print('- Train len:', len(splits['train']), ' Val len:', len(splits['test']), '\n')
+
+    splits['train'].save_to_disk(os.path.join(config.instruct_dataset_target_path, 'train'))
+    splits['test'] .save_to_disk(os.path.join(config.instruct_dataset_target_path, 'val'))
+
+def prepare_instruct_dataset(
+    *,
+    datasets_mix
+):
+    number_of_processes = get_max_number_of_cpu_processes()
+
+    datasets_mix = copy.deepcopy(datasets_mix) if datasets_mix else copy.deepcopy(DEFAULT_INSTRUCT_MIX)
+
+    #### VERIFY MIX FILE STRUCTURE
+    seed, valid_datasets, probabilities = assert_common_structure_and_extract(datasets_mix, SUPPORTED_HF_DATASETS)
+
+    download_and_prepare_data(
+        seed=seed,
+        valid_datasets=valid_datasets,
+        probabilities=probabilities,
+        number_of_processes=number_of_processes
     )
 
-    if max_datapoints:
-        max_datapoints = int(max_datapoints)
-        ds = ds.select(range(max_datapoints))
-
-    adapter = ADAPTERS_MAP.get(adapter_id)
-
-    def normalize(doc):
-        conversation = adapter(doc, transforms)
-        conversation = ensure_user_first(conversation)
-
-        if not has_assistant_content(conversation):
-            return {'conversation': [], 'source': ds_id}
-
-        conversation = conversation[:max_turns]
-        return {'conversation': conversation, 'source': ds_id}
-
-    ds = ds.map(normalize, num_proc=NUMBER_OF_PROCESSES)
-    ds = ds.filter(lambda x: len(x['conversation']) > 0, num_proc=NUMBER_OF_PROCESSES)
-
-    columns_to_remove = [c for c in ds.column_names if c not in ['source']]
-    tokenized_ds = ds.map(tokenize, num_proc=NUMBER_OF_PROCESSES, remove_columns=columns_to_remove)
-
-    prepared_datasets.append(tokenized_ds)
-
-mixed_datasets = interleave_datasets(prepared_datasets, probabilities=probabilities, seed=seed)
-
-print('Summary:')
-for d, ds in zip(valid_datasets, prepared_datasets):
-    print(f'- Total for: {d["id"]} : {len(ds)}')
-
-print('- Mix total len:', len(mixed_datasets))
-
-splits = mixed_datasets.train_test_split(test_size=0.01, seed=seed)
-
-print('- Train len:', len(splits['train']), ' Val len:', len(splits['test']), '\n')
-
-splits['train'].save_to_disk(os.path.join(config.instruct_dataset_target_path, 'train'))
-splits['test'] .save_to_disk(os.path.join(config.instruct_dataset_target_path, 'val'))
-
-print('\nData preparation completed.')
+    print('\nData preparation completed.')

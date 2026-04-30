@@ -18,31 +18,6 @@ from datasets_preparation.data_preparation_utils import (
 from datasets_preparation.default_mixes import DEFAULT_PRETRAINING_MIX
 
 
-NUMBER_OF_PROCESSES = get_max_number_of_cpu_processes()
-
-#### SUPPORTED DATASETS
-SUPPORTED_HF_DATASETS = {
-    'HuggingFaceFW/fineweb-edu': {
-        'sample-10BT': {
-            'id': 'HuggingFaceFW/fineweb-edu',
-            'split': 'train',
-            'adapter': 'HuggingFaceFW/fineweb-edu_sample-10BT'
-        },
-        'sample-100BT': {
-            'id': 'HuggingFaceFW/fineweb-edu',
-            'split': 'train',
-            'adapter': 'HuggingFaceFW/fineweb-edu_sample-100BT'
-        }
-    },
-    'HuggingFaceTB/smollm-corpus': {
-        'fineweb-edu-dedup': {
-            'id': 'HuggingFaceTB/smollm-corpus',
-            'split': 'train',
-            'adapter': 'HuggingFaceTB/smollm-corpus_fineweb-edu-dedup'
-        }
-    }
-}
-
 #### ADAPTERS
 def adapt_fineweb_edu(batch, transforms):
     return {'text': batch['text']}
@@ -50,10 +25,27 @@ def adapt_fineweb_edu(batch, transforms):
 def adapt_smollm_corpus_fineweb_edu_dedup(batch, transforms):
     return {'text': batch['text']}
 
-ADAPTERS_MAP = {
-    'HuggingFaceFW/fineweb-edu_sample-10BT': adapt_fineweb_edu,
-    'HuggingFaceFW/fineweb-edu_sample-100BT': adapt_fineweb_edu,
-    'HuggingFaceTB/smollm-corpus_fineweb-edu-dedup': adapt_smollm_corpus_fineweb_edu_dedup
+#### SUPPORTED DATASETS
+SUPPORTED_HF_DATASETS = {
+    'HuggingFaceFW/fineweb-edu': {
+        'sample-10BT': {
+            'id': 'HuggingFaceFW/fineweb-edu',
+            'split': 'train',
+            'adapter': adapt_fineweb_edu
+        },
+        'sample-100BT': {
+            'id': 'HuggingFaceFW/fineweb-edu',
+            'split': 'train',
+            'adapter': adapt_fineweb_edu
+        }
+    },
+    'HuggingFaceTB/smollm-corpus': {
+        'fineweb-edu-dedup': {
+            'id': 'HuggingFaceTB/smollm-corpus',
+            'split': 'train',
+            'adapter': adapt_smollm_corpus_fineweb_edu_dedup
+        }
+    }
 }
 
 def download_and_prepare_data(
@@ -69,15 +61,17 @@ def download_and_prepare_data(
 
         dataset_config = SUPPORTED_HF_DATASETS[ds_id][name]
         split = dataset_config['split']
-        adapter_id = dataset_config['adapter']
+        adapter = dataset_config['adapter']
 
         transforms = dataset.get('transforms', {})
 
         max_datapoints = transforms.get('max_datapoints', None)
 
+        hf_name = None if name == 'default' else name
+
         ds = load_dataset(
             ds_id,
-            name=name,
+            name=hf_name,
             split=split,
             streaming=True,
             token=config.hf_token
@@ -90,10 +84,6 @@ def download_and_prepare_data(
             assert isinstance(max_datapoints, int)
             assert max_datapoints > 0
             ds = ds.take(max_datapoints)
-
-        adapter = ADAPTERS_MAP.get(adapter_id)
-        if adapter is None:
-            raise ValueError(f'No adapter for {adapter_id}')
 
         def normalize(
             batch,
@@ -154,6 +144,7 @@ def download_and_prepare_data(
     return train_ds, val_ds
 
 tokenizer = None
+
 def tokenize(doc):
     global tokenizer
     if tokenizer is None:
@@ -168,7 +159,8 @@ def shard_and_tokenize(
     *,
     shard_size,
     train_ds,
-    val_ds
+    val_ds,
+    number_of_processes
 ):
     print('Preparing train dataset...')
     prepare_dataset(
@@ -177,7 +169,7 @@ def shard_and_tokenize(
         target_folder=os.path.join(config.pretrain_dataset_target_path, 'train'),
         shard_file_prefix='data',
         shard_size=shard_size,
-        number_of_processes=NUMBER_OF_PROCESSES,
+        number_of_processes=number_of_processes,
         chunksize=config.mp_pool_chunk_size
     )
 
@@ -188,7 +180,7 @@ def shard_and_tokenize(
         target_folder=os.path.join(config.pretrain_dataset_target_path, 'val'),
         shard_file_prefix='data',
         shard_size=shard_size,
-        number_of_processes=NUMBER_OF_PROCESSES,
+        number_of_processes=number_of_processes,
         chunksize=config.mp_pool_chunk_size
     )
 
@@ -196,6 +188,8 @@ def prepare_pretraining_dataset(
     *,
     datasets_mix
 ):
+    number_of_processes = get_max_number_of_cpu_processes()
+
     datasets_mix = copy.deepcopy(datasets_mix) if datasets_mix else copy.deepcopy(DEFAULT_PRETRAINING_MIX)
 
     assert 'shard_size' in datasets_mix
@@ -214,7 +208,8 @@ def prepare_pretraining_dataset(
     shard_and_tokenize(
         shard_size=shard_size,
         train_ds=train_ds,
-        val_ds=val_ds
+        val_ds=val_ds,
+        number_of_processes=number_of_processes
     )
 
     print('\nData preparation completed.')
