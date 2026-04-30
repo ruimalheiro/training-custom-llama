@@ -1,0 +1,28 @@
+{
+    "seed": 42,
+    "shard_size": 100000000,
+    "datasets": {
+        "HuggingFaceFW/fineweb-edu": {
+            "sample-10BT": {
+                "weight": 0.25,
+                "transforms": {
+                    "max_datapoints": 1000
+                }
+            },
+            "sample-100BT": {
+                "weight": 0.25,
+                "transforms": {
+                    "max_datapoints": 1000
+                }
+            }
+        },
+        "HuggingFaceTB/smollm-corpus": {
+            "fineweb-edu-dedup": {
+                "weight": 0.50,
+                "transforms": {
+                    "max_datapoints": 1000
+                }
+            }
+        }
+    }
+}

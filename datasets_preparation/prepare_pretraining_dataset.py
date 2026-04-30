@@ -15,6 +15,7 @@ from datasets_preparation.data_preparation_utils import (
     get_max_number_of_cpu_processes,
     assert_common_structure_and_extract
 )
+from datasets_preparation.default_mixes import DEFAULT_PRETRAINING_MIX
 
 
 NUMBER_OF_PROCESSES = get_max_number_of_cpu_processes()
@@ -38,19 +39,6 @@ SUPPORTED_HF_DATASETS = {
             'id': 'HuggingFaceTB/smollm-corpus',
             'split': 'train',
             'adapter': 'HuggingFaceTB/smollm-corpus_fineweb-edu-dedup'
-        }
-    }
-}
-
-DEFAULT_MIX = {
-    'seed': 42,
-    'shard_size': 100_000_000,
-    'datasets': {
-        'HuggingFaceFW/fineweb-edu': {
-            'sample-10BT': {
-                'weight': 1.0,
-                'transforms': {}
-            }
         }
     }
 }
@@ -208,7 +196,7 @@ def prepare_pretraining_dataset(
     *,
     datasets_mix
 ):
-    datasets_mix = copy.deepcopy(datasets_mix) if datasets_mix else copy.deepcopy(DEFAULT_MIX)
+    datasets_mix = copy.deepcopy(datasets_mix) if datasets_mix else copy.deepcopy(DEFAULT_PRETRAINING_MIX)
 
     assert 'shard_size' in datasets_mix
     shard_size = datasets_mix['shard_size']
